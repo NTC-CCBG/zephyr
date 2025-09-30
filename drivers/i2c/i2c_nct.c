@@ -551,8 +551,7 @@ static void i2c_nct_target_isr(const struct device *dev)
 				/* target received data before */
 				len = 0;
 				while (len < i2c_nct_get_dma_cnt(dev)) {
-					target_cb->write_received(data->target_cfg,
-								 data->rx_buf[len]);
+					target_cb->write_received(data->target_cfg, data->rx_buf[len]);
 					len++;
 				}
 			}
@@ -615,7 +614,7 @@ static void i2c_nct_target_isr(const struct device *dev)
 	}
 
 	/* --------------------------------------------- */
-	/* Target STOP occurred                           */
+	/* Target STOP occurred                          */
 	/* --------------------------------------------- */
 	if (inst->SMBnST & BIT(NCT_SMBnST_SLVSTP)) {
 		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
@@ -869,8 +868,14 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 
 	/* Disable target addr 1 */
 	value = inst->SMBnADDR1;
-	value &= ~BIT(NCT_SMBnADDR_SAEN);
-	inst->SMBnADDR1 = value;
+	inst->SMBnADDR1 &= ~BIT(NCT_SMBnADDR_SAEN);
+
+	/* the device has target function */
+	if (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) {
+		/* delay 60 us */
+		k_busy_wait(60);
+		while (data->target_oper_state != I2C_NCT_OPER_STA_START);
+	}
 
 	/* prepare data to transfer */
 	data->rx_cnt = 0;
@@ -880,9 +885,7 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 	data->err_code = 0;
 	if (i2c_nct_combine_msg(dev, msgs, num_msgs) < 0) {
 		i2c_nct_mutex_unlock(dev);
-		/* Enable target addr 1 */
-		value = inst->SMBnADDR1;
-		value |= BIT(NCT_SMBnADDR_SAEN);
+		/* restore target addr 1 */
 		inst->SMBnADDR1 = value;
 		return -EPROTONOSUPPORT;
 	}
@@ -892,9 +895,7 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 		if (num_msgs != 1) {
 			/* Quick command must have one msg */
 			i2c_nct_mutex_unlock(dev);
-			/* Enable target addr 1 */
-			value = inst->SMBnADDR1;
-			value |= BIT(NCT_SMBnADDR_SAEN);
+			/* restore target addr 1 */
 			inst->SMBnADDR1 = value;
 			return -EPROTONOSUPPORT;
 		}
@@ -927,9 +928,7 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 
 	i2c_nct_mutex_unlock(dev);
 
-	/* Enable target addr 1 */
-	value = inst->SMBnADDR1;
-	value |= BIT(NCT_SMBnADDR_SAEN);
+	/* restore target addr 1 */
 	inst->SMBnADDR1 = value;
 
 	return ret;
