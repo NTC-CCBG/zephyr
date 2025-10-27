@@ -5,7 +5,6 @@
 
 config I3C_NCT
 	bool "Nuvoton NCT enhance super I/O (eSIO) I3C driver"
-	depends on DT_HAS_NUVOTON_NCT_I3C_ENABLED
 	select I3C_IBI_WORKQUEUE if I3C_USE_IBI
 	default y
 	help

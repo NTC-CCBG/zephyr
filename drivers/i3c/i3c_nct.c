@@ -2365,6 +2365,21 @@ static int nct_i3c_do_ccc(const struct device *dev, struct i3c_ccc_payload *payl
 
 	LOG_DBG("CCC[0x%02x]", payload->ccc.id);
 
+	// Bus idle is defined as no activity for 200us
+	// But the mstatus.state will be idle immediatedly after stop
+	// The following wait is to gurantee bus idle for 200us
+#if 0
+	k_busy_wait(300);
+
+	/* The idle state in the mstatus.state is not obey the rule */
+	if (WAIT_FOR((nct_i3c_state_get(i3c_inst) == MSTATUS_STATE_IDLE),
+		     I3C_CHK_TIMEOUT_US, NULL) == false) {
+		LOG_ERR("xfer state error: %d", nct_i3c_state_get(i3c_inst));
+		nct_i3c_mutex_unlock(dev);
+		return -ETIMEDOUT;
+	}
+#endif
+
 	/* Write emit START and broadcast address (0x7E) */
 	ret = nct_i3c_request_emit_start(i3c_inst, I3C_BROADCAST_ADDR, NCT_I3C_MCTRL_TYPE_I3C, false,
 					  0);
@@ -2908,8 +2923,40 @@ static inline int nct_i3c_target_MATCHED_handler(const struct device *dev)
 	int ret = 0;
 	uint32_t int_status = i3c_inst->STATUS;
 
+	// Check TDSTS to decide RD or WR
+	struct pdma_dsct_reg *dsct_inst = NULL;
+	struct pdma_reg *pdma_inst;
+	uint8_t dsct_idx;
+
 #ifdef CONFIG_I3C_NCT_DMA
 	if (oper_state != I3C_OP_STATE_IBI) {
+		/* wait until STREQWR == 1 or STREQRD == 1*/
+		while (1) {
+			if (int_status & 0x18) {
+				break;
+			}
+
+			if ((int_status & 0x1) == 0) {
+
+				// check slave's TX PDMA => is_rx = false
+				dsct_idx = nct_i3c_pdma_dsct(dev, false, &dsct_inst);
+				if (data->dma_triggered & BIT(dsct_idx)) {
+					set_oper_state(dev, I3C_OP_STATE_RD);
+				}
+				else {
+					set_oper_state(dev, I3C_OP_STATE_WR);
+
+					if ((target_cb != NULL) && (target_cb->write_requested_cb != NULL)) {
+						target_cb->write_requested_cb(data->target_config);
+					}
+				}
+				ret = 1;
+				break;
+			}
+
+			int_status = i3c_inst->STATUS;
+		};
+
 		/* The current bus request is an SDR mode read or write */
 		if (IS_BIT_SET(int_status, NCT_I3C_STATUS_STREQRD)) {
 			/* SDR read request */
@@ -3020,6 +3067,12 @@ static inline void nct_i3c_target_STOP_handler(const struct device *dev)
 		(data->target_config != NULL) ? data->target_config->callbacks : NULL;
 	enum nct_i3c_oper_state oper_state = get_oper_state(dev);
 
+if ((oper_state != I3C_OP_STATE_CCC) && (oper_state != I3C_OP_STATE_CHANDLED)) {
+	/* NACK to master while processing buffer */
+	i3c_inst->CONFIG |= BIT(NCT_I3C_CONFIG_NACK);
+}
+
+
 	if (IS_BIT_SET(i3c_inst->INTMASKED, NCT_I3C_INTMASKED_START)) {
 		/* Clear the status bit */
 		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_START);
@@ -3035,10 +3088,14 @@ static inline void nct_i3c_target_STOP_handler(const struct device *dev)
 		if (nct_i3c_target_xfer_end_handle_dma_v2(dev, oper_state) != 0) {
 			LOG_ERR("xfer end handle failed after stop, op state=%d", oper_state);
 		}
+
+		i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_NACK);
 	} else if (oper_state == I3C_OP_STATE_IBI) {
 		if (GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT) == 0) {
 			nct_i3c_target_dma_off(dev, false);
 		}
+
+		i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_NACK);
 	} else if (oper_state == I3C_OP_STATE_CCC) {
 		if (nct_i3c_target_xfer_end_handle_dma_v2(dev, oper_state) != 0) {
 			LOG_ERR("xfer end handle failed after stop, op state=%d", oper_state);
@@ -3099,12 +3156,9 @@ static inline void nct_i3c_target_START_handler(const struct device *dev)
 static void nct_i3c_target_isr(const struct device *dev)
 {
 	struct nct_i3c_data *data = dev->data;
-	struct i3c_config_target *config_target = &data->config_target;
-	struct i3c_target_config *target_config = data->target_config;
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	uint32_t intmask = i3c_inst->INTMASKED;
 
-	while (intmask != 0) {
 #ifndef CONFIG_I3C_NCT_DMA
 		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_RXPEND)) {
 			/* Flush rx and tx FIFO */
@@ -3113,48 +3167,66 @@ static void nct_i3c_target_isr(const struct device *dev)
 		}
 #endif
 
-		/* Check STOP detected */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_STOP)) {
-			nct_i3c_target_STOP_handler(dev);
-		}
-
-		/* Check START or Sr detected */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_START)) {
-			nct_i3c_target_START_handler(dev);
-		}
-
-		/* Check incoming header matched target dynamic address */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_MATCHED)) {
-			nct_i3c_target_MATCHED_handler(dev);
-		}
-
 		/* Check error or warning has occurred */
 		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_ERRWARN)) {
-			if (i3c_inst->ERRWARN == 0x100) {
-				LOG_DBG("ERRWARN %x", i3c_inst->ERRWARN);
+		uint32_t errwarn = i3c_inst->ERRWARN;
+		if (errwarn == 0x100) {
+			// read timeout happened
+			LOG_WRN("ERRWARN %x", errwarn);
 			}
 			else {
-				LOG_ERR("ERRWARN %x", i3c_inst->ERRWARN);
+			LOG_ERR("ERRWARN %x", errwarn);
 			}
-
-			i3c_inst->ERRWARN = i3c_inst->ERRWARN;
+		i3c_inst->ERRWARN = errwarn;
 		}
 
 		/* Check dynamic address changed */
 		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_DACHG)) {
 			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_DACHG);
 			if (IS_BIT_SET(i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DAVALID)) {
+			struct i3c_config_target *config_target = &data->config_target;
+			struct i3c_target_config *target_config = data->target_config;
+
 				if (target_config != NULL) {
 					config_target->dynamic_addr = GET_FIELD(
 						i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DADDR);
 				}
 			}
+
+		intmask &= ~NCT_I3C_INTMASKED_DACHG;
+		if (!intmask) { return; }
+	}
+
+	/* Check START or Sr detected */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_START)) {
+		nct_i3c_target_START_handler(dev);
+
+		intmask &= ~NCT_I3C_INTMASKED_START;
+		if (!intmask) { return; }
+	}
+
+	/* CCC handled (handled by IP) */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_CHANDLED)) {
+		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_CHANDLED);
+		set_oper_state(dev, I3C_OP_STATE_CHANDLED);
+		intmask &= ~NCT_I3C_INTMASKED_CHANDLED;
+		if (!intmask) { return; }
 		}
 
 		/* CCC 'not' automatically handled was received */
 		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_CCC)) {
 			set_oper_state(dev, I3C_OP_STATE_CCC);
 			i3c_inst->INTCLR = BIT(NCT_I3C_INTCLR_CCC); /* W1C */
+
+		intmask &= ~NCT_I3C_INTMASKED_CCC;
+		if (!intmask) { return; }
+	}
+
+	/* Check incoming header matched target dynamic address */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_MATCHED)) {
+		nct_i3c_target_MATCHED_handler(dev);
+		if (intmask == NCT_I3C_INTMASKED_MATCHED) { return; }
+		intmask &= ~NCT_I3C_INTMASKED_MATCHED;
 		}
 
 		/* HDR command, address match */
@@ -3162,9 +3234,9 @@ static void nct_i3c_target_isr(const struct device *dev)
 			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_DDRMATCH);
 		}
 
-		/* CCC handled (handled by IP) */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_CHANDLED)) {
-			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_CHANDLED);
+	/* Check STOP detected */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_STOP)) {
+		nct_i3c_target_STOP_handler(dev);
 		}
 
 		/* Event requested. IBI, hot-join, bus control */
@@ -3175,10 +3247,6 @@ static void nct_i3c_target_isr(const struct device *dev)
 				k_sem_give(&data->target_event_lock_sem);
 			}
 		}
-
-		/* Check mask again, flags may be set when handling */
-		intmask = i3c_inst->INTMASKED;
-	}
 
 	/*
 	 * Secondary controller (Controller register).
@@ -3554,6 +3622,8 @@ static int nct_i3c_target_init(const struct device *dev)
 	LOG_DBG("max write len: %d", config_target->max_write_len);
 
 	/* Ignore DA and detect all START and STOP */
+	// We should not enable MATCHSS by default. 
+	// The unsupport CCC and optional data will be received, but target ISR is not fired.
 	i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_MATCHSS);
 
 	/* Enable the target interrupt events */
@@ -3746,11 +3816,13 @@ static int nct_i3c_init(const struct device *dev)
 	    (GET_FIELD(i3c_inst->MCONFIG, NCT_I3C_MCONFIG_CTRENA) ==
 	     MCONFIG_CTRENA_ON)) {
 		/* Perform bus initialization */
+#ifndef CONFIG_APP_MCTP
 		ret = i3c_bus_init(dev, &config->common.dev_list);
 		if (ret != 0) {
 			LOG_ERR("Apply i3c_bus_init() fail %d", ret);
 			return ret;
 		}
+#endif
 	}
 
 	return 0;

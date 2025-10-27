@@ -104,6 +104,7 @@ enum nct_i3c_oper_state {
 	I3C_OP_STATE_RD,
 	I3C_OP_STATE_IBI,
 	I3C_OP_STATE_CCC,
+	I3C_OP_STATE_CHANDLED,
 	I3C_OP_STATE_MAX,
 };
 
