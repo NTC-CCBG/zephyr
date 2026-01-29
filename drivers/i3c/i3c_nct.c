@@ -2925,7 +2925,7 @@ static inline int nct_i3c_target_MATCHED_handler(const struct device *dev)
 
 	// Check TDSTS to decide RD or WR
 	struct pdma_dsct_reg *dsct_inst = NULL;
-	struct pdma_reg *pdma_inst;
+//	struct pdma_reg *pdma_inst;
 	uint8_t dsct_idx;
 
 #ifdef CONFIG_I3C_NCT_DMA
