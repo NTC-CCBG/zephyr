@@ -232,7 +232,7 @@
 		};
 
 		dasdc: dsadc@400d1100 {
-			channel-count = <24>;
+			channel-count = <27>;
 		};
 
 		espi0: espi@4000a000 {
