@@ -509,6 +509,21 @@ static void i2c_nct_target_isr(const struct device *dev)
 	}
 #endif
 
+	/* Without these handlers the master ISR ignores unexpected SLVSTP and NMATCH status bits,
+	 * which can leave the bus in a stuck state. */
+	if (inst->SMBnST & BIT(NCT_SMBnST_SLVSTP)) {
+		data->target_oper_state = I2C_NCT_OPER_STA_IDLE;
+		i2c_nct_reset_module(dev);
+		i2c_nct_notify(dev, -EAGAIN);
+		inst->SMBnST = BIT(NCT_SMBnST_SLVSTP);
+	}
+
+	if (inst->SMBnST & BIT(NCT_SMBnST_NMATCH)) {
+		data->target_oper_state = I2C_NCT_OPER_STA_IDLE;
+		i2c_nct_nack(dev);
+		inst->SMBnST = BIT(NCT_SMBnST_NMATCH);
+	}
+
 	/* --------------------------------------------- */
 	/* NACK occurred                                 */
 	/* --------------------------------------------- */
