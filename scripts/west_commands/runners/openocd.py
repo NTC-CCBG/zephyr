@@ -38,7 +38,8 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
                  telnet_port=DEFAULT_OPENOCD_TELNET_PORT,
                  gdb_port=DEFAULT_OPENOCD_GDB_PORT,
                  gdb_init=None, no_load=False,
-                 target_handle=DEFAULT_OPENOCD_TARGET_HANDLE):
+                 target_handle=DEFAULT_OPENOCD_TARGET_HANDLE,
+                 load_file=None):
         super().__init__(cfg)
 
         if not path.exists(cfg.board_dir):
@@ -92,6 +93,7 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
         self.targets_arg = [] if no_targets else ['-c targets']
         self.serial = ['-c set _ZEPHYR_BOARD_SERIAL ' + serial] if serial else []
         self.use_elf = use_elf
+        self.load_file = load_file
         self.gdb_init = gdb_init
         self.load_arg = [] if no_load else ['-ex', 'load']
         self.target_handle = target_handle
@@ -109,6 +111,10 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
                             help='if given, selects FTDI instance by its serial number, defaults to empty')
         parser.add_argument('--use-elf', default=False, action='store_true',
                             help='if given, Elf file will be used for loading instead of HEX image')
+        parser.add_argument('--load-file', default=None,
+                            help='''if given, use this file (and optional address/
+                            format tokens) for the load command instead of the ELF;
+                            e.g. "./build/zephyr/zephyr_signed.bin 0x80000 bin"''')
         # Options for flashing:
         parser.add_argument('--cmd-pre-init', action='append',
                             help='''Command to run before calling init;
@@ -171,7 +177,8 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
             no_targets=args.no_targets, tcl_port=args.tcl_port,
             telnet_port=args.telnet_port, gdb_port=args.gdb_port,
             gdb_init=args.gdb_init, no_load=args.no_load,
-            target_handle=args.target_handle)
+            target_handle=args.target_handle,
+            load_file=args.load_file)
 
     def print_gdbserver_message(self):
         if not self.thread_info_enabled:
@@ -302,7 +309,9 @@ class OpenOcdBinaryRunner(ZephyrBinaryRunner):
             for i in self.pre_load:
                 pre_load_cmd.append("-c")
                 pre_load_cmd.append(i)
-            load_image = ['-c', 'load_image ' + self.elf_name]
+            load_cmd = self.load_cmd if self.load_cmd else 'load_image'
+            load_target = self.load_file if self.load_file else self.elf_name
+            load_image = ['-c', load_cmd + ' ' + load_target]
 
         verify_image = []
         post_verify_cmd = []
