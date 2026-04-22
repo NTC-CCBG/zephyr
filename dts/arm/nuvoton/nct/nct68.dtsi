@@ -80,6 +80,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io00 &wui_io01 &wui_io02 &wui_io03
 				    &wui_io04 &wui_io05 &wui_io06 &wui_io07>;
+			gpio-line-names = "GPIO00_Pin7","GPIO01_Pin8","GPIO02_Pin9","GPIO03_Pin10",
+					"GPIO04_Pin11","GPIO05_Pin12","GPIO06_Pin13","GPIO07_Pin14";
 		};
 
 		gpio1: gpio@40083000 {
@@ -91,6 +93,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io10 &wui_io11 &wui_io12 &wui_io13
 				    &wui_io14 &wui_io15 &wui_io16 &wui_io17>;
+			gpio-line-names = "GPIO10_Pin29","GPIO11_Pin30","GPIO12_Pin31","GPIO13_Pin32",
+					"GPIO14_Pin33","GPIO15_Pin34","GPIO16_Pin35","GPIO17_Pin36";
 		};
 
 		gpio2: gpio@40085000 {
@@ -102,6 +106,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io20 &wui_io21 &wui_io22 &wui_io23
 				    &wui_io24 &wui_io25 &wui_io26 &wui_io27>;
+			gpio-line-names = "GPIO20_Pin38","GPIO21_Pin39","GPIO22_Pin40","GPIO23_Pin41",
+					"GPIO24_Pin42","GPIO25_Pin43","GPIO26_Pin44","GPIO27_Pin45";
 		};
 
 		gpio3: gpio@40087000 {
@@ -113,6 +119,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io30 &wui_io31 &wui_io32 &wui_io33
 				    &wui_io34 &wui_io35 &wui_io36 &wui_io37>;
+			gpio-line-names = "GPIO30_Pin47","GPIO31_Pin48","GPIO32_Pin49","GPIO33_Pin50",
+					"GPIO34_Pin51","GPIO35_Pin52","GPIO36_Pin53","GPIO37_Pin54";
 		};
 
 		gpio4: gpio@40089000 {
@@ -124,6 +132,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io40 &wui_io41 &wui_io42 &wui_io43
 				    &wui_io44 &wui_io45 &wui_io46 &wui_io47>;
+			gpio-line-names = "GPIO40_Pin56","GPIO41_Pin57","GPIO42_Pin58","GPIO43_Pin59",
+					"GPIO44_Pin66","GPIO45_Pin67","GPIO46_Pin68","GPIO47_Pin69";
 		};
 
 		gpio5: gpio@4008b000 {
@@ -135,6 +145,9 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io50 &wui_io51 &wui_io52 &wui_io53
 				    &wui_io54 &wui_io55 &wui_io56 &wui_io57>;
+			gpio-line-names = "GPIO50_Pin60_PSOUT","GPIO51_Pin61_PSIN","GPIO52_Pin63_PSON","GPIO53_Pin64_SLPS3",
+					"GPIO54_Pin65_SCI","GPIO55_Pin70","GPIO56_Pin71","GPIO57_X";
+			gpio-reserved-ranges = <7 1>;
 		};
 
 		gpio6: gpio@4008d000 {
@@ -146,6 +159,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io60 &wui_io61 &wui_io62 &wui_io63
 				    &wui_io64 &wui_io65 &wui_io66 &wui_io67>;
+			gpio-line-names = "GPIO60_Pin77","GPIO61_Pin78","GPIO62_Pin79","GPIO63_Pin80_ATXPGD",
+					"GPIO64_Pin83_DPWROK","GPIO65_Pin84_SLPS5","GPIO66_Pin86","GPIO67_Pin87";
 		};
 
 		gpio7: gpio@4008f000 {
@@ -157,6 +172,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io70 &wui_io71 &wui_io72 &wui_io73
 				    &wui_io74 &wui_io75 &wui_io76 &wui_io77>;
+			gpio-line-names = "GPIO70_Pin88","GPIO71_Pin89_SLPSUS","GPIO72_Pin90_FWRDY","GPIO73_Pin91",
+					"GPIO74_Pin92","GPIO75_Pin93_JEN","GPIO76_Pin95","GPIO77_Pin96";
 		};
 
 		gpio8: gpio@40091000 {
@@ -168,6 +185,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io80 &wui_io81 &wui_io82 &wui_io83
 				    &wui_io84 &wui_io85 &wui_io86 &wui_io87>;
+			gpio-line-names = "GPIO80_Pin97","GPIO81_Pin98","GPIO82_Pin103","GPIO83_Pin104",
+					"GPIO84_Pin105","GPIO85_Pin106","GPIO86_Pin107","GPIO87_Pin109";
 		};
 
 		gpio9: gpio@40093000 {
@@ -179,6 +198,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_io90 &wui_io91 &wui_io92 &wui_io93
 				    &wui_io94 &wui_io95 &wui_io96 &wui_io97>;
+			gpio-line-names = "GPIO90_Pin111","GPIO91_Pin112","GPIO92_Pin113","GPIO93_Pin114",
+					"GPIO94_Pin115","GPIO95_Pin116","GPIO96_Pin118","GPIO97_Pin120";
 		};
 
 		gpioa: gpio@40095000 {
@@ -190,6 +211,8 @@
 			ngpios = <8>;
 			wui-maps = <&wui_ioa0 &wui_ioa1 &wui_ioa2 &wui_ioa3
 				    &wui_ioa4 &wui_ioa5 &wui_ioa6 &wui_ioa7>;
+			gpio-line-names = "GPIOA0_Pin121","GPIOA1_Pin122","GPIOA2_Pin123","GPIOA3_Pin124",
+					"GPIOA4_Pin125","GPIOA5_Pin126","GPIOA6_Pin127","GPIOA7_Pin128";
 		};
 
 		gpiob: gpio@40097000 {
@@ -201,6 +224,9 @@
 			ngpios = <8>;
 			wui-maps = <&wui_iob0 &wui_iob1 &wui_iob2 &wui_iob3
 				    &wui_iob4 &wui_iob5 &wui_iob6 &wui_iob7>;
+			gpio-line-names = "GPIOB0_Pin2_SMI","GPIOB1_X","GPIOB2_Pin18","GPIOB3_Pin19",
+					"GPIOB4_Pin27_ESPIEN","GPIOB5_Pin28","GPIOB6_Pin55","GPIOB7_Pin26_LRESET";
+					gpio-reserved-ranges = <1 1>;
 		};
 
 		gpioc: gpio@40099000 {
@@ -212,6 +238,9 @@
 			ngpios = <8>;
 			wui-maps = <&wui_ioc0 &wui_ioc1 &wui_none &wui_none
 					&wui_none &wui_none &wui_none &wui_none>;
+			gpio-line-names = "GPIOC0_X","GPIOC1_X","GPIOC2_X","GPIOC3_X",
+					"GPIOC4_X","GPIOC5_X","GPIOC6_X","GPIOC7_X";
+			gpio-reserved-ranges = <0 8>;
 		};
 		
 //		gpiod: gpio@4009b000 {
@@ -233,6 +262,9 @@
 			ngpios = <8>;
 			wui-maps = <&wui_ioe0 &wui_ioe1 &wui_ioe2 &wui_ioe3
 				    &wui_ioe4 &wui_ioe5 &wui_ioe6 &wui_none>;
+			gpio-line-names = "GPIOE0_Pin74","GPIOE1_Pin73_DPWROK","GPIOE2_Pin81_PWROK","GPIOE3_Pin37_FWRDY",
+					"GPIOE4_Pin100","GPIOE5_Pin101_RSMRST","GPIOE6_Pin102","GPIOE7_X";
+			gpio-reserved-ranges = <7 1>;
 		};
 		
 //		gpiof: gpio@4009f000 {
