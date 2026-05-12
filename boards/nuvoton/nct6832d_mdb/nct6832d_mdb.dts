@@ -165,16 +165,16 @@
 		qspi-flags = <NCT_QSPI_SW_CS1>;
 		mapped-addr = <0x70000000>;
 		pinctrl-0 = <&fiu0_shd_cs_io0_io1_clk_gp44_45_46_47
-&fiu0_shd_quad_io2_io3_clk_gp55_56>;
+			&fiu0_shd_quad_io2_io3_clk_gp55_56>;
 		pinctrl-names = "default";
 	};
 };
  
 &qspi_spip {
-	ext_flash_spip: w25q256jv@0 {
+	ext_flash_spip: w25q256jv@1 {
 		compatible ="nuvoton,nct-nor";
 		size = <DT_SIZE_M(32 * 8)>;
-		reg = <0>;
+		reg = <1>;
 		enter-4byte-addr = <0x2>;
 		status = "okay";
 		rd-mode = "NCT_RD_MODE_NORMAL";
