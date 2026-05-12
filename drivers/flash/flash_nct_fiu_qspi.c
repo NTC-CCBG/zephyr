@@ -169,6 +169,9 @@ static inline void qspi_nct_config_dra_4byte_mode(const struct device *dev,
 			core_inst->SET_CMD_EN &= ~BIT(NCPM_SET_CMD_EN_BACK_CMD_EN);
 			host_inst->SET_CMD_EN &= ~BIT(NCPM_SET_CMD_EN_BACK_CMD_EN);
 		}
+		else {
+			LOG_ERR("Invalid SW CS bit, check config flags: 0x%08x", qspi_cfg->flags);
+		}
 
 		core_inst->FIU_EXT_CFG &= ~BIT(NCT_FIU_EXT_CFG_FOUR_BADDR);
 		host_inst->FIU_EXT_CFG &= ~BIT(NCT_FIU_EXT_CFG_FOUR_BADDR);
@@ -320,6 +323,7 @@ static void qspi_nct_fiu_mutex_lock_configure(const struct device *dev,
 {
 	struct nct_qspi_data *const data = dev->data;
 	struct scfg_reg *inst_scfg = HAL_SFCG_INST();
+	unsigned int bit_idx;
 
 	k_sem_take(&data->lock_sem, K_FOREVER);
 
@@ -331,7 +335,8 @@ static void qspi_nct_fiu_mutex_lock_configure(const struct device *dev,
 		pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
 
 		/* Save SW CS bit used in UMA mode */
-		data->sw_cs = find_lsb_set(cfg->flags & NCT_QSPI_SW_CS_MASK);
+		bit_idx = find_lsb_set(cfg->flags & NCT_QSPI_SW_CS_MASK);
+		data->sw_cs = (bit_idx != 0) ? BIT((bit_idx - 1)) : 0;
 
 		/* Configure for Direct Read Access (DRA) settings */
 		qspi_nct_config_dra_mode(dev, cfg);
