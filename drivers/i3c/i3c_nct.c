@@ -2925,7 +2925,7 @@ static inline int nct_i3c_target_MATCHED_handler(const struct device *dev)
 
 	// Check TDSTS to decide RD or WR
 	struct pdma_dsct_reg *dsct_inst = NULL;
-	struct pdma_reg *pdma_inst;
+//	struct pdma_reg *pdma_inst;
 	uint8_t dsct_idx;
 
 #ifdef CONFIG_I3C_NCT_DMA
@@ -3259,7 +3259,7 @@ static void nct_i3c_target_isr(const struct device *dev)
 	}
 }
 
-static void nct_i3c_isr(const struct device *dev)
+void nct_i3c_isr(const struct device *dev)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 
@@ -3744,7 +3744,7 @@ return 1;
 	return 0;
 }
 
-static int nct_i3c_init(const struct device *dev)
+int nct_i3c_init(const struct device *dev)
 {
 	const struct nct_i3c_config *config = dev->config;
 	struct nct_i3c_data *data = dev->data;
@@ -4023,7 +4023,7 @@ static int nct_i3c_target_unregister(const struct device *dev, struct i3c_target
 	return 0;
 }
 
-static const struct i3c_driver_api nct_i3c_driver_api = {
+const struct i3c_driver_api nct_i3c_driver_api = {
 	.i2c_api.configure = nct_i3c_i2c_api_configure,
 	.i2c_api.transfer = nct_i3c_i2c_api_transfer,
 	.i2c_api.recover_bus = nct_i3c_recover_bus,
