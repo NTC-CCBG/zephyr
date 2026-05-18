@@ -671,6 +671,14 @@ static int i2c_nct_target_register(const struct device *dev,
 	/* set target addr, cfg->address is 7 bit address */
 	i2c_set_target_addr(dev, cfg->address);
 
+#if (CONFIG_TARGET_HW_TIMEOUT_EN == 'Y')
+	/* Set I2C HW timeout value */
+	Set_Cumulative_ClockCycle_Timeout(dev, CONFIG_TARGET_HW_TIMEOUT_CLK_CYCLE_TIME);
+	Set_Cumulative_ClockLow_Timeout(dev, CONFIG_TARGET_HW_TIMEOUT_CLK_LOW_TIME);
+	/* Enable HW Timeout */
+	inst->TIMEOUT_EN |= BIT(NCT_TIMEOUT_EN_TIMEOUT_EN);
+#endif
+
 exit:
 	i2c_nct_mutex_unlock(dev);
 	return ret;
@@ -856,15 +864,16 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 	uint8_t value;
 	struct i2c_reg *const inst = I2C_INSTANCE(dev);
 
-#if (CONFIG_CONTROLLER_HW_TIMEOUT_EN == 'Y')
-	struct i2c_reg *const inst = I2C_INSTANCE(dev);
-#endif
+
 	struct i2c_nct_data *const data = dev->data;
 	int ret;
 
 	if (i2c_nct_mutex_lock(dev, I2C_WAITING_TIME) != 0) {
 		return -EBUSY;
 	}
+
+	/* check if bus is idle */
+	while (inst->SMBnCST & BIT(NCT_SMBnCST_BB));
 
 	/* Disable target addr 1 */
 	value = inst->SMBnADDR1;

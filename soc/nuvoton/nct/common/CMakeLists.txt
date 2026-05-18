@@ -14,9 +14,14 @@ set(NCT_BIN_NAME ${CONFIG_KERNEL_BIN_NAME}_signed.bin)
 string(TOUPPER "${SOC_NAME}" soc_name_upper)
 
 if(CONFIG_ESIO_EXT_SIGN)
-  # 1. "NuveSIOBinGenTool" is called in bat, and exection tool and bat are in project folder
-  set_property(GLOBAL APPEND PROPERTY extra_post_build_commands
-    COMMAND ${CMAKE_COMMAND} -E env cmd /c ${CMAKE_SOURCE_DIR}/esio_signing.bat ${KERNEL_BIN_NAME} ${NCT_BIN_NAME})
+  # 1. "NuveSIOBinGenTool" is called in script, and execution tool and script are in project folder
+  if(CMAKE_HOST_WIN32)
+    set_property(GLOBAL APPEND PROPERTY extra_post_build_commands
+      COMMAND ${CMAKE_COMMAND} -E env cmd /c ${CMAKE_SOURCE_DIR}/tools/Windows/esio_signing.bat ${KERNEL_BIN_NAME} ${NCT_BIN_NAME})
+  else()
+    set_property(GLOBAL APPEND PROPERTY extra_post_build_commands
+      COMMAND ${CMAKE_COMMAND} -E env bash ${CMAKE_SOURCE_DIR}/tools/Ubuntu/esio_signing.sh ${KERNEL_BIN_NAME} ${NCT_BIN_NAME})
+  endif()
 else()
    # 2. Signed tool is called "esiost.py" in zephyr kernel.
    set_property(GLOBAL APPEND PROPERTY extra_post_build_commands

@@ -225,3 +225,78 @@
 	alarms_count = <1>;
 	status = "okay";
 };
+
+
+&gpio0 {
+	gpio-line-names = "GPIO00_Pin7","GPIO01_Pin8","GPIO02_Pin9","GPIO03_Pin10",
+			"GPIO04_Pin11","GPIO05_Pin12","GPIO06_Pin13","GPIO07_Pin14";
+};
+
+&gpio1 {
+	gpio-line-names = "GPIO10_Pin29","GPIO11_Pin30","GPIO12_Pin31","GPIO13_Pin32",
+			"GPIO14_Pin33","GPIO15_Pin34","GPIO16_Pin35","GPIO17_Pin36";
+};
+
+&gpio2 {
+	gpio-line-names = "GPIO20_Pin38","GPIO21_Pin39","GPIO22_Pin40","GPIO23_Pin41",
+			"GPIO24_Pin42","GPIO25_Pin43","GPIO26_Pin44","GPIO27_Pin45";
+};
+
+&gpio3 {
+	gpio-line-names = "GPIO30_Pin47","GPIO31_Pin48","GPIO32_Pin49","GPIO33_Pin50",
+			"GPIO34_Pin51","GPIO35_Pin52","GPIO36_Pin53","GPIO37_Pin54";
+};
+
+&gpio4 {
+	gpio-line-names = "GPIO40_Pin56","GPIO41_Pin57","GPIO42_Pin58","GPIO43_Pin59",
+			"GPIO44_Pin66","GPIO45_Pin67","GPIO46_Pin68","GPIO47_Pin69";
+};
+
+&gpio5 {
+	gpio-line-names = "GPIO50_Pin60_PSOUT","GPIO51_Pin61_PSIN","GPIO52_Pin63_PSON","GPIO53_Pin64_SLPS3",
+			"GPIO54_Pin65_SCI","GPIO55_Pin70","GPIO56_Pin71","GPIO57_X";
+	gpio-reserved-ranges = <7 1>;
+};
+
+&gpio6 {
+	gpio-line-names = "GPIO60_Pin77","GPIO61_Pin78","GPIO62_Pin79","GPIO63_Pin80_ATXPGD",
+			"GPIO64_Pin83_DPWROK","GPIO65_Pin84_SLPS5","GPIO66_Pin86","GPIO67_Pin87";
+};
+
+&gpio7 {
+	gpio-line-names = "GPIO70_Pin88","GPIO71_Pin89_SLPSUS","GPIO72_Pin90_FWRDY","GPIO73_Pin91",
+			"GPIO74_Pin92","GPIO75_Pin93_JEN","GPIO76_Pin95","GPIO77_Pin96";
+};
+
+&gpio8 {
+	gpio-line-names = "GPIO80_Pin97","GPIO81_Pin98","GPIO82_Pin103","GPIO83_Pin104",
+			"GPIO84_Pin105","GPIO85_Pin106","GPIO86_Pin107","GPIO87_Pin109";
+};
+
+&gpio9 {
+	gpio-line-names = "GPIO90_Pin111","GPIO91_Pin112","GPIO92_Pin113","GPIO93_Pin114",
+			"GPIO94_Pin115","GPIO95_Pin116","GPIO96_Pin118","GPIO97_Pin120";
+};
+
+&gpioa {
+	gpio-line-names = "GPIOA0_Pin121","GPIOA1_Pin122","GPIOA2_Pin123","GPIOA3_Pin124",
+			"GPIOA4_Pin125","GPIOA5_Pin126","GPIOA6_Pin127","GPIOA7_Pin128";
+};
+
+&gpiob {
+	gpio-line-names = "GPIOB0_Pin2_SMI","GPIOB1_X","GPIOB2_Pin18","GPIOB3_Pin19",
+			"GPIOB4_Pin27_ESPIEN","GPIOB5_Pin28","GPIOB6_Pin55","GPIOB7_Pin26_LRESET";
+			gpio-reserved-ranges = <1 1>;
+};
+
+&gpioc {
+	gpio-line-names = "GPIOC0_X","GPIOC1_X","GPIOC2_X","GPIOC3_X",
+			"GPIOC4_X","GPIOC5_X","GPIOC6_X","GPIOC7_X";
+	gpio-reserved-ranges = <0 8>;
+};
+
+&gpioe {
+	gpio-line-names = "GPIOE0_Pin74","GPIOE1_Pin73_DPWROK","GPIOE2_Pin81_PWROK","GPIOE3_Pin37_FWRDY",
+			"GPIOE4_Pin100","GPIOE5_Pin101_RSMRST","GPIOE6_Pin102","GPIOE7_X";
+	gpio-reserved-ranges = <7 1>;
+};
