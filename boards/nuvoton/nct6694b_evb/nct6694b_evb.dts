@@ -247,7 +247,7 @@
 	i2c-scl-hz = <1000000>;
 	pinctrl-0 = <&i3c5_scl_sda_gp82_83>;
 	pinctrl-names = "default";
-	status = "okay";
+	status = "disabled";
 };
 
 &i3c6 {
@@ -257,7 +257,7 @@
 	pinctrl-0 = <&tri_state_gp96 &tri_state_gp97
 			&i3c6_scl_sda_gp96_97>;
 	pinctrl-names = "default";
-	status = "okay";
+	status = "disabled";
 };
 
 &c2h {
