@@ -1,0 +1,13 @@
+# Nuvoton Cortex-M4 Embedded Controller NCT66 series
+
+# Copyright (c) 2025 Nuvoton Technology Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SERIES_NCT66
+	select ARM
+	select CPU_CORTEX_M4
+	select CPU_CORTEX_M_HAS_DWT
+	select SOC_FAMILY_NCT
+	select CPU_HAS_ARM_MPU
+	help
+	  Enable support for Nuvoton NCT66 series

@@ -1,0 +1,6 @@
+board:
+  name: nct6832d_mdb
+  full_name: NCT6832D_MDB
+  vendor: nuvoton
+  socs:
+  - name: nct6832d

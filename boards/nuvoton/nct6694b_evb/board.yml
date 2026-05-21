@@ -1,0 +1,6 @@
+board:
+  name: nct6694b_evb
+  full_name: NCT6694B_EVB
+  vendor: nuvoton
+  socs:
+  - name: nct6694b
