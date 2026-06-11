@@ -254,7 +254,7 @@ static int pwm_nct_init(const struct device *dev)
 	DEVICE_DT_INST_DEFINE(inst,					                \
 			    &pwm_nct_init, NULL,			                \
 			    &pwm_nct_data_##inst, &pwm_nct_cfg_##inst,                \
-			    PRE_KERNEL_1, CONFIG_PWM_INIT_PRIORITY,	                \
+			    POST_KERNEL, CONFIG_PWM_INIT_PRIORITY,	                \
 			    &pwm_nct_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(NCT_PWM_INIT)
