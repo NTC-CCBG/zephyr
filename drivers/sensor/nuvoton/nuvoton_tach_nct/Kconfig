@@ -4,9 +4,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 config TACH_NCT
-	bool "Nuvoton NCT Tachometer sensor"
+	bool "Nuvoton NCT MFT controller"
 	default y
 	depends on DT_HAS_NUVOTON_NCT_TACH_ENABLED
 	depends on SOC_FAMILY_NCT
 	help
-	  Enable the "Nuvoton NCT tachometer sensor.
+	  Enable the Nuvoton NCT Multi-Function Timer (MFT) controller driver.
+	  This driver initialises the MFT hardware and exposes it as a
+	  non-sensor device for use by tach-input child nodes.
+
+config TACH_NCT_INPUT
+	bool "Nuvoton NCT Tachometer input sensor"
+	default y
+	depends on DT_HAS_NUVOTON_NCT_TACH_INPUT_ENABLED
+	depends on TACH_NCT
+	depends on SOC_FAMILY_NCT
+	help
+	  Enable the Nuvoton NCT virtual tachometer-input sensor driver.
+	  Each enabled nuvoton,nct-tach-input DT node creates one sensor
+	  device that measures fan RPM on a single TA pin, sharing the
+	  parent MFT hardware via a spinlock.
