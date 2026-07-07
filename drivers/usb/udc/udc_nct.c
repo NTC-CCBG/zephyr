@@ -31,14 +31,15 @@ LOG_MODULE_REGISTER(udc_nct, CONFIG_UDC_DRIVER_LOG_LEVEL);
 /* Timeout for USB Write Data to Host (Unit: ms) */
 #define NCT_USB_WRITE_TIMEOUT			(200)
 
-/* move data between USB DATA FIFO and user RAM */
-#define UDC_NCT_DMA_ENABLE
+/*
+ * Optional DMA acceleration switches for bulk data moves.
+ * Keep TX/RX independent so throughput/CPU impact can be measured separately.
+ */
+// #define UDC_NCT_DMA_TX_ENABLE
+// #define UDC_NCT_DMA_RX_ENABLE
 
 /* defined only for debug ISR */
 // #define DBG_USBD_IRQ
-
-/* defined only for debug BULK_IN */
-// #define DBG_USBD_BULK_IN
 
 /* Endpoint index enum */
 enum {
@@ -147,6 +148,7 @@ struct udc_nct_data {
 	struct k_msgq ctrl_evt_msgq;
 	const struct device *dev;
 	char ctrl_evt_msgq_buffer[NCT_CTRL_EVT_Q_LEN * sizeof(struct udc_nct_ctrl_evt)];
+	struct net_buf *ctrl_out_active;
 	uint8_t setup[8];
 	volatile uint8_t ctrl_out_refill_force;
 	volatile uint16_t ctrl_out_queued;
@@ -171,6 +173,26 @@ struct udc_nct_data {
 	struct udc_nct_ep_data ep_data[NUM_OF_EP_MAX];
 	struct k_spinlock dma_lock;
 };
+
+static void udc_nct_reset_ep_ram_state(const struct device *dev)
+{
+	const struct udc_nct_config *config = dev->config;
+	struct udc_nct_data *priv = udc_get_private(dev);
+
+	/*
+	 * Reserve CEP shared RAM [0..63]; usbd_setup_control_pipe() will program
+	 * the control endpoint buffer immediately after reset handling completes.
+	 */
+	priv->ram_offset = CEP_MAX_PKT_SIZE;
+
+	for (int i = 0; i < config->num_bidir_endpoints; i++) {
+		priv->ep_data[i].mps = 0U;
+		priv->ep_data[i].in_batch_pkts = 0U;
+		priv->ep_data[i].ram_base = 0U;
+		priv->ep_data[i].ram_len = 0U;
+		priv->ep_data[i].type = 0U;
+	}
+}
 
 static const char *udc_nct_evt_name(uint8_t type)
 {
@@ -215,7 +237,9 @@ static inline void usbd_set_ep_buf_addr(uint32_t ep, uint32_t base, uint32_t len
 {
 	if (ep == NCT_EP_CEP) {
 		USBD->USBD_CEPBUFSTART = base;
-		USBD->USBD_CEPBUFEND = base + len - 1ul;
+		USBD->USBD_CEPBUFEND = 63; // base + len - 1ul;
+LOG_DBG("CEP RAM range: [%u..%u] (%u bytes)", USBD->USBD_CEPBUFSTART, USBD->USBD_CEPBUFEND, 
+		USBD->USBD_CEPBUFEND - USBD->USBD_CEPBUFSTART + 1);		
 	} else {
 		USBD->EP[ep - 1].USBD_EPBUFSTART = base;
 		USBD->EP[ep - 1].USBD_EPBUFEND = base + len - 1ul;
@@ -268,12 +292,7 @@ static inline int usbd_write_ep(uint8_t ep_idx, const uint8_t *data, uint32_t le
 
 	USBD->EP[ep_idx - 1].USBD_EPRSPCTL = 0;
 
-#if defined(DBG_USBD_BULK_IN)		
-	/* Performance measurement: start timing */
-	int64_t start_time = k_uptime_ticks();
-#endif	
-
-	#if defined(UDC_NCT_DMA_ENABLE)
+	#if defined(UDC_NCT_DMA_TX_ENABLE)
     const struct device *dev = nct_udc_device_get();
     struct udc_nct_data *priv = udc_get_private(dev);
     k_spinlock_key_t key = k_spin_lock(&priv->dma_lock);
@@ -287,7 +306,7 @@ static inline int usbd_write_ep(uint8_t ep_idx, const uint8_t *data, uint32_t le
 	USBD->USBD_DMAADDR = (uint32_t)data;
 	USBD->USBD_DMACNT = len;
 	
-	/* Trigger DMA transfer (hardware will copy len bytes from data to FIFO) */
+	/* Trigger DMA read transfer (hardware will copy len bytes from data to FIFO) */
 	USBD->USBD_DMACTL = BIT(NCT_USBD_DMACTL_DMAEN) | BIT(NCT_USBD_DMACTL_SVINEP) | BIT(NCT_USBD_DMACTL_DMARD) | (ep_idx & 0x0FU);
 
 	/* Wait for DMA to complete (DMAEN will be cleared by hardware automatically) */
@@ -297,24 +316,11 @@ static inline int usbd_write_ep(uint8_t ep_idx, const uint8_t *data, uint32_t le
 
 	k_spin_unlock(&priv->dma_lock, key);
 
-#if defined(DBG_USBD_BULK_IN)	
-	int64_t end_time = k_uptime_ticks();
-	int64_t dma_time_us = k_ticks_to_us_near64(end_time - start_time);
-	LOG_INF("DMA transfer: len=%u bytes, time=%lld us (%.3f us/byte)", 
-		len, dma_time_us, (double)dma_time_us / (double)len);
-#endif		
-
 	#else	
 	for (uint32_t i = 0; i < len; i++) {
 		M8(&USBD->EP[ep_idx - 1].USBD_EPDAT_BYTE) = data[i];
 	}
 
-#if defined(DBG_USBD_BULK_IN)
-	int64_t end_time = k_uptime_ticks();
-	int64_t pio_time_us = k_ticks_to_us_near64(end_time - start_time);
-	LOG_INF("PIO transfer:  len=%u bytes, time=%lld us (%.3f us/byte)", 
-		len, pio_time_us, (double)pio_time_us / (double)len);
-#endif		
 	#endif
 
 	/* In auto mode, mode bits must be set for both short and full-MPS transfers. */
@@ -335,7 +341,7 @@ static inline int usbd_write_ep(uint8_t ep_idx, const uint8_t *data, uint32_t le
 	/* Performance measurement: start timing */
 	int64_t start_time = k_uptime_ticks();
 
-	#if defined(UDC_NCT_DMA_ENABLE)
+	#if defined(UDC_NCT_DMA_TX_ENABLE)
     const struct device *dev = nct_udc_device_get();
     struct udc_nct_data *priv = udc_get_private(dev);
     k_spinlock_key_t key = k_spin_lock(&priv->dma_lock);
@@ -391,20 +397,14 @@ static inline int usbd_write_ep(uint8_t ep_idx, const uint8_t *data, uint32_t le
 
 /**
  * Read endpoint data from USB FIFO to RAM.
- * @param ep_idx Endpoint index (1-based for EPA-EPL, 0xFF for CEP)
+ * @param ep_hw Endpoint index (EPA-EPL, 0xFF for CEP)
  * @param buf Pointer to net_buf structure
  * @param len Number of bytes to transfer
  * @return 0 on success, negative error code otherwise
  */
-static inline int usbd_read_ep(uint8_t ep_idx, struct net_buf *buf, uint32_t len)
+static inline int usbd_read_ep(uint8_t ep_hw, struct net_buf *buf, uint32_t len)
 {
-	uint32_t i;
-
-	if ((ep_idx > NCT_EP_HW_LAST) && (ep_idx != NCT_EP_CEP)) {
-		return -EINVAL;
-	}
-
-	if (len == 0 || len > 0xFFFFFU) {
+	if ((ep_hw > NCT_EP_HW_LAST) && (ep_hw != NCT_EP_CEP)) {
 		return -EINVAL;
 	}
 
@@ -412,32 +412,47 @@ static inline int usbd_read_ep(uint8_t ep_idx, struct net_buf *buf, uint32_t len
 		return -EINVAL;
 	}
 
-	for (i = 0U; i < len; i++) {
-		if (net_buf_tailroom(buf) > 0) {
-			net_buf_add_u8(buf, USBD->EP[ep_idx].USBD_EPDAT_BYTE);
-		}
+	if (net_buf_tailroom(buf) < len) {
+		return -ENOSPC;
 	}
-LOG_DBG("Read %u bytes from EP%d FIFO", len, ep_idx);
 
+	#if defined(UDC_NCT_DMA_RX_ENABLE)
+	const struct device *dev = nct_udc_device_get();
+	struct udc_nct_data *priv = udc_get_private(dev);
+	k_spinlock_key_t key = k_spin_lock(&priv->dma_lock);
+//	uint32_t ep_num = (uint32_t)ep_hw;
 
-
-#if 0	
 	while (USBD->USBD_DMACTL & BIT(NCT_USBD_DMACTL_DMAEN)) {
 		/* wait until DMA is ready (previous transfer is done) */
 	}
 
-	/* Configure DMA address and count */
-	USBD->USBD_DMAADDR = (uint32_t)data;
+	USBD->USBD_DMAADDR = (uint32_t)buf->data;
 	USBD->USBD_DMACNT = len;
 
-	/* Enable DMA for read (host sends to EP):
-	 * - EPNUM: endpoint index (bits 0-3)
-	 * - DMAEN: enable DMA (bit 5)
-	 * - DMARD: 1 for read (EP receives from host)
+	/*
+	 * For bulk OUT receive, data flows from the USB buffer into system RAM.
+	 * Per the datasheet definitions, RX must keep both control bits cleared:
+	 * DMARD=0 selects DMA write (USB buffer -> RAM) and SVINEP=0 selects the
+	 * OUT side of the endpoint. Like the vendor HSUSBD example, DMACTL.EPNUM
+	 * uses the USB endpoint number (EPA = 1), not the EP[] array index.
 	 */
-	uint32_t dmactl = (ep_idx & 0x0FU) | BIT(NCT_USBD_DMACTL_DMAEN) | BIT(NCT_USBD_DMACTL_DMARD);
-	USBD->USBD_DMACTL = dmactl;
-#endif
+
+
+	/* Trigger DMA write transfer (hardware will copy len bytes from FIFO to buffer) */
+	USBD->USBD_DMACTL = (ep_hw & 0x0FU) | BIT(NCT_USBD_DMACTL_DMAEN);
+
+	while (USBD->USBD_DMACTL & BIT(NCT_USBD_DMACTL_DMAEN)) {
+		/* Busy-wait for DMA completion */
+	}
+
+	net_buf_add(buf, len);
+	k_spin_unlock(&priv->dma_lock, key);
+	#else
+	for (uint32_t i = 0U; i < len; i++) {
+		net_buf_add_u8(buf, USBD->EP[ep_hw].USBD_EPDAT_BYTE);
+	}
+
+	#endif
 	return 0;
 }
 
@@ -463,10 +478,68 @@ static inline void usbd_clear_all_ep_intsts(void)
 
 static inline void usbd_setup_control_pipe(void)
 {
-	USBD->USBD_CEPINTEN = BIT(NCT_USBD_CEPINTEN_SETUPPKIEN) |
-						  BIT(NCT_USBD_CEPINTEN_RXPKIEN) |
-						  BIT(NCT_USBD_CEPINTEN_TXPKIEN) |
-						  BIT(NCT_USBD_CEPINTEN_STSDONEIEN);	
+	USBD->USBD_CEPINTEN = BIT(NCT_USBD_CEPINTEN_SETUPPKIEN);
+}
+
+static int usbd_ctrl_feed_dout(const struct device *dev, const size_t length);
+static struct net_buf *udc_nct_ctrl_alloc_active_dout(const struct device *dev,
+						      size_t length);
+static void udc_nct_ctrl_drop_active_dout(const struct device *dev, const char *tag);
+static size_t udc_nct_buf_total_len(const struct net_buf *buf);
+static void udc_nct_log_ctrl_buf_meta(const char *tag, const struct net_buf *buf);
+static void udc_nct_log_ep0_out_head(const struct device *dev, const char *tag);
+
+static int udc_nct_rearm_setup_stage(const struct device *dev, const char *tag)
+{
+	int err;
+
+	/* Return CEP to its idle state for the next SETUP transaction. */
+	usbd_setup_control_pipe();
+	err = usbd_ctrl_feed_dout(dev, SETUP_PKT_SIZE);
+	if (err == -ENOMEM) {
+		LOG_ERR("CTL[%s] setup refill failed: %d", tag, err);
+	}
+
+	return err;
+}
+
+static void udc_nct_resume_pending_out(const struct device *dev, uint8_t ep_addr)
+{
+	uint8_t ep_hw = USB_EP_GET_IDX(ep_addr) - 1U;
+	unsigned int lock_key;
+	uint32_t rx_int_mask = BIT(NCT_USBD_EPINTEN_RXPKIEN) |
+			      BIT(NCT_USBD_EPINTEN_SHORTRXIEN);
+
+	/*
+	 * Serialize pending FIFO drain against the OUT ISR. If RX interrupts remain
+	 * enabled here, the ISR can observe the same hardware-resident packet before
+	 * this thread-context resume path finishes consuming it, causing duplicate
+	 * delivery of the same OUT payload.
+	 */
+	lock_key = irq_lock();
+	USBD->EP[ep_hw].USBD_EPINTEN &= ~rx_int_mask;
+	USBD->EP[ep_hw].USBD_EPINTSTS = BIT(NCT_USBD_EPINTSTS_RXPKIF) |
+				     BIT(NCT_USBD_EPINTSTS_SHORTRXIF);
+
+	while (true) {
+		uint32_t pending_len = USBD->EP[ep_hw].USBD_EPDATCNT & 0xFFFFul;
+		struct net_buf *buf;
+
+		if (pending_len == 0U) {
+			break;
+		}
+
+		buf = udc_buf_get(dev, ep_addr);
+		if (buf == NULL) {
+			break;
+		}
+
+		usbd_read_ep(ep_hw, buf, pending_len);
+		udc_ep_set_busy(dev, ep_addr, false);
+		udc_submit_ep_event(dev, buf, 0);
+	}
+
+	irq_unlock(lock_key);
 }
 
 
@@ -501,6 +574,39 @@ static int udc_nct_kick_ep(const struct device *dev, struct udc_ep_config *cfg)
 		return 0;
 	}
 
+	if (ep_idx == 0U && USB_EP_DIR_IS_OUT(ep)) {
+		if (udc_ctrl_stage_is_status_out(dev)) {
+			buf = udc_buf_peek(dev, ep);
+			if (buf == NULL) {
+				return 0;
+			}
+
+			LOG_DBG("CEP RX arm (status OUT wait) ceps=0x%08x cepe=0x%08x q=%u setup#%u",
+				(uint32_t)USBD->USBD_CEPINTSTS, (uint32_t)USBD->USBD_CEPINTEN,
+				(uint32_t)priv->ctrl_out_queued, (uint32_t)priv->dbg_setup_seq);
+
+			USBD->USBD_CEPINTEN = BIT(NCT_USBD_CEPINTEN_STSDONEIEN);
+
+			// For the Control Read transaction,
+			// we must set NAKCLR here to let NCT6694D ack the STATUS OUT sent by host.
+			USBD_SET_CEP_STATE(USBD_CEPCTL_NAKCLR);
+			udc_ep_set_busy(dev, ep, true);
+			return 0;
+		}
+
+		if (udc_ctrl_stage_is_data_out(dev)) {
+			if (priv->ctrl_out_active == NULL) {
+				LOG_DBG("CEP RX arm (data OUT wait) skipped: no active OUT buf");
+				return 0;
+			}
+
+			LOG_DBG("CEP RX arm (data OUT wait) cepctl=0x%08x", USBD->USBD_CEPCTL);
+			USBD->USBD_CEPINTEN = BIT(NCT_USBD_CEPINTEN_RXPKIEN);
+			udc_ep_set_busy(dev, ep, true);
+			return 0;
+		}
+	}
+
 	buf = udc_buf_peek(dev, ep);
 	if (buf == NULL) {
 		return 0;
@@ -508,25 +614,13 @@ static int udc_nct_kick_ep(const struct device *dev, struct udc_ep_config *cfg)
 
 	if (ep_idx == 0U) {
 		if (USB_EP_DIR_IS_OUT(ep)) {
-			if (udc_ctrl_stage_is_status_out(dev)) {
-				LOG_DBG("CEP RX arm (status OUT wait) ceps=0x%08x cepe=0x%08x q=%u setup#%u",
-					(uint32_t)USBD->USBD_CEPINTSTS, (uint32_t)USBD->USBD_CEPINTEN,
-					(uint32_t)priv->ctrl_out_queued, (uint32_t)priv->dbg_setup_seq);
-
-				// For the Control Read transaction, 
-				// we must set NAKCLR here to let NCT6694D ack the STATUS OUT sent by host.
-				USBD_SET_CEP_STATE(USBD_CEPCTL_NAKCLR);
-				udc_ep_set_busy(dev, ep, true);
-			} else if (udc_ctrl_stage_is_data_out(dev)) {
-				LOG_DBG("CEP RX arm (data OUT wait)");
-				udc_ep_set_busy(dev, ep, true);
-			}
 			return 0;
 		}
 
 		LOG_DBG("CEP TX write len=%u", buf->len);
 
 		if (buf->len == 0U) {
+			USBD->USBD_CEPINTEN = BIT(NCT_USBD_CEPINTEN_STSDONEIEN);			
 			USBD_SET_CEP_STATE(USBD_CEPCTL_ZEROLEN);
 			udc_ep_set_busy(dev, ep, true);
 			return 0;
@@ -539,20 +633,28 @@ static int udc_nct_kick_ep(const struct device *dev, struct udc_ep_config *cfg)
 		 */
 		uint32_t xfer_len = MIN(buf->len, CEP_MAX_PKT_SIZE);
 		for (uint32_t i = 0U; i < xfer_len; i++) {
-			M8(&USBD->USBD_CEPDAT) = buf->data[i];
+			M8(&USBD->USBD_CEPDAT_BYTE) = buf->data[i];
 		}
 
 		/*
 		 * Arm TXPK interrupt before starting transfer to avoid losing a fast
 		 * TX completion event during mask/flag update.
 		 */
+		USBD->USBD_CEPINTEN = BIT(NCT_USBD_CEPINTEN_TXPKIEN);
+
 		udc_ep_set_busy(dev, ep, true);
 		USBD->USBD_CEPTXCNT = xfer_len;
 		return 0;
 	}
 
 	if (USB_EP_DIR_IS_OUT(ep)) {
-		LOG_DBG("EP 0x%02x OUT: arm RX, busy=true", ep);
+		if ((USBD->EP[ep_idx - 1].USBD_EPDATCNT & 0xFFFFul) != 0U) {
+			udc_nct_resume_pending_out(dev, ep);
+			if (udc_buf_peek(dev, ep) == NULL) {
+				return 0;
+			}
+		}
+
 		udc_ep_set_busy(dev, ep, true);
 		/* Drop stale OUT receive flags before enabling RX interrupts. */
 		USBD->EP[ep_idx - 1].USBD_EPINTSTS = BIT(NCT_USBD_EPINTSTS_RXPKIF) |
@@ -668,8 +770,54 @@ static int usbd_ctrl_feed_dout(const struct device *dev, const size_t length)
 
 	net_buf_put(&cfg->fifo, buf);
 	priv->ctrl_out_queued++;
+	LOG_DBG("CTL feed_dout len=%u queued=%u", (uint32_t)length,
+		(uint32_t)priv->ctrl_out_queued);
+udc_nct_log_ctrl_buf_meta("CTL feed_dout new", buf);
+udc_nct_log_ep0_out_head(dev, "feed_dout head");
 
 	return 0;
+}
+
+static struct net_buf *udc_nct_ctrl_alloc_active_dout(const struct device *dev,
+						      size_t length)
+{
+	struct udc_nct_data *priv = udc_get_private(dev);
+	struct net_buf *buf;
+
+	if (k_is_in_isr()) {
+		LOG_ERR("active_dout alloc in ISR, len=%u", (uint32_t)length);
+		return NULL;
+	}
+
+	if (priv->ctrl_out_active != NULL) {
+		LOG_WRN("CTL drop stale active OUT before alloc");
+		net_buf_unref(priv->ctrl_out_active);
+		priv->ctrl_out_active = NULL;
+	}
+
+	buf = udc_ctrl_alloc(dev, USB_CONTROL_EP_OUT, length);
+	if (buf == NULL) {
+		return NULL;
+	}
+
+	priv->ctrl_out_active = buf;
+	LOG_DBG("CTL active_dout len=%u", (uint32_t)length);
+udc_nct_log_ctrl_buf_meta("CTL active_dout buf", buf);
+
+	return buf;
+}
+
+static void udc_nct_ctrl_drop_active_dout(const struct device *dev, const char *tag)
+{
+	struct udc_nct_data *priv = udc_get_private(dev);
+
+	if (priv->ctrl_out_active == NULL) {
+		return;
+	}
+
+	LOG_DBG("CTL[%s] drop active OUT buf=%p", tag, priv->ctrl_out_active);
+	net_buf_unref(priv->ctrl_out_active);
+	priv->ctrl_out_active = NULL;
 }
 
 static void udc_nct_ctrl_out_buf_popped(const struct device *dev)
@@ -679,6 +827,98 @@ static void udc_nct_ctrl_out_buf_popped(const struct device *dev)
 	if (priv->ctrl_out_queued > 0U) {
 		priv->ctrl_out_queued--;
 	}
+}
+
+static size_t udc_nct_buf_total_len(const struct net_buf *buf)
+{
+	size_t total = 0U;
+
+	for (const struct net_buf *frag = buf; frag != NULL; frag = frag->frags) {
+		total += frag->len;
+	}
+
+	return total;
+}
+
+static void udc_nct_log_ctrl_buf_meta(const char *tag, const struct net_buf *buf)
+{
+	const struct udc_buf_info *bi;
+
+	if (buf == NULL) {
+		LOG_DBG("%s buf=NULL", tag);
+		return;
+	}
+
+	bi = udc_get_buf_info((struct net_buf *)buf);
+	LOG_DBG("%s buf=%p frags=%p len=%u total=%u ep=0x%02x s=%u d=%u st=%u",
+		tag, buf, buf->frags,
+		(unsigned int)buf->len,
+		(unsigned int)udc_nct_buf_total_len(buf),
+		(unsigned int)bi->ep,
+		(unsigned int)bi->setup,
+		(unsigned int)bi->data,
+		(unsigned int)bi->status);
+}
+
+static void udc_nct_log_ep0_out_head(const struct device *dev, const char *tag)
+{
+	struct net_buf *head = udc_buf_peek(dev, USB_CONTROL_EP_OUT);
+
+	if (head == NULL) {
+		LOG_DBG("CTL[%s] ep0out head=NULL", tag);
+		return;
+	}
+
+udc_nct_log_ctrl_buf_meta(tag, head);
+}
+
+static void udc_nct_log_ctrl_out_buf(const char *tag, const struct net_buf *buf)
+{
+	char label[48];
+	uint32_t frag_idx = 0U;
+
+	for (const struct net_buf *frag = buf; frag != NULL; frag = frag->frags) {
+		snprintf(label, sizeof(label), "%s frag%u len=%u", tag,
+			(unsigned int)frag_idx,
+			(unsigned int)frag->len);
+		LOG_HEXDUMP_DBG(frag->data, frag->len, label);
+		frag_idx++;
+	}
+}
+
+static uint32_t udc_nct_read_cep_into_buf(struct net_buf *buf, uint32_t len)
+{
+	uint8_t raw_pkt[CEP_MAX_PKT_SIZE];
+	struct net_buf *frag = buf;
+	uint32_t raw_len = MIN(len, (uint32_t)sizeof(raw_pkt));
+	uint32_t copied = 0U;
+	uint32_t raw_idx;
+
+	for (raw_idx = 0U; raw_idx < raw_len; raw_idx++) {
+		raw_pkt[raw_idx] = (uint8_t)USBD->USBD_CEPDAT_BYTE;
+	}
+
+	while (raw_idx < len) {
+		(void)USBD->USBD_CEPDAT_BYTE;
+		raw_idx++;
+	}
+
+	LOG_HEXDUMP_DBG(raw_pkt, raw_len, "CEP RX raw");
+
+	while (frag != NULL && copied < raw_len) {
+		while (net_buf_tailroom(frag) > 0U && copied < len) {
+			net_buf_add_u8(frag, raw_pkt[copied]);
+			copied++;
+		}
+
+		frag = frag->frags;
+	}
+
+	while (copied < raw_len) {
+		copied++;
+	}
+
+	return copied;
 }
 
 static void udc_nct_ep_purge_queued(const struct device *dev, uint8_t ep_addr)
@@ -800,7 +1040,7 @@ static int udc_nct_handle_ctrl_in_done(const struct device *dev,
 				(uint32_t)tx_len, buf->len, xfer_len);
 
 			for (uint32_t i = 0U; i < xfer_len; i++) {
-				M8(&USBD->USBD_CEPDAT) = buf->data[i];
+				M8(&USBD->USBD_CEPDAT_BYTE) = buf->data[i];
 			}
 
 			struct udc_ep_config *in_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
@@ -809,6 +1049,20 @@ static int udc_nct_handle_ctrl_in_done(const struct device *dev,
 			udc_ep_set_busy(dev, USB_CONTROL_EP_IN, true);
 			USBD->USBD_CEPTXCNT = xfer_len;
 			return 0;
+		}
+
+		if (udc_ep_buf_has_zlp(buf)) {
+			struct udc_ep_config *in_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
+
+			/*
+			 * device_next may request a terminating ZLP when the response is
+			 * shorter than wLength but ends exactly on the EP0 max-packet boundary.
+			 * Keep DATA_IN stage active, send the ZLP, then advance to STATUS_OUT
+			 * when STSDONE reports completion of this zero-length IN packet.
+			 */
+			udc_ep_buf_clear_zlp(buf);
+			udc_buf_put(in_cfg, buf);
+			return udc_nct_kick_ep(dev, in_cfg);
 		}
 
 		/* All DATA_IN sent, now advance to STATUS_OUT */
@@ -901,17 +1155,30 @@ static void udc_nct_ctrl_process_evt(const struct device *dev,
 			return;
 		}
 
+		udc_nct_ctrl_drop_active_dout(dev, "setup-new");
+
 		udc_ctrl_update_stage(dev, buf);
+		LOG_DBG("CTL SETUP evt stage=%u setup#%u wLen=%u queued=%u",
+			(uint32_t)data->stage,
+			(uint32_t)evt->setup_seq,
+			(uint32_t)udc_data_stage_length(buf),
+			(uint32_t)priv->ctrl_out_queued);
+udc_nct_log_ctrl_buf_meta("CTL SETUP buf", buf);
+udc_nct_log_ep0_out_head(dev, "setup-before-feed");
 
 		if (udc_ctrl_stage_is_data_out(dev)) {
+			// control write
 			wLength = udc_data_stage_length(buf);
-			err = usbd_ctrl_feed_dout(dev, wLength);
-			if (err == -ENOMEM) {
+			if (udc_nct_ctrl_alloc_active_dout(dev, wLength) == NULL) {
+				err = -ENOMEM;
 				err = udc_submit_ep_event(dev, buf, err);
 			}
+udc_nct_log_ep0_out_head(dev, "setup-after-data-feed");
 		} else if (udc_ctrl_stage_is_data_in(dev)) {
+			// control read
 			err = udc_ctrl_submit_s_in_status(dev);
 		} else {
+			// no data stage
 			err = udc_ctrl_submit_s_status(dev);
 		}
 
@@ -932,33 +1199,61 @@ static void udc_nct_ctrl_process_evt(const struct device *dev,
 			(uint32_t)data->stage,
 			(uint32_t)evt->was_status_out,
 			(uint32_t)evt->rx_len);
+udc_nct_log_ctrl_buf_meta("CTL RXPK buf", buf);
+		LOG_DBG("CTL RXPK total=%u", (uint32_t)udc_nct_buf_total_len(buf));
+		udc_nct_log_ctrl_out_buf("CTL RXPK data", buf);
 
 		if (evt->was_status_out) {
-			udc_ctrl_update_stage(dev, buf);
-			err = udc_ctrl_submit_status(dev, buf);
-			if (err != 0) {
-				LOG_ERR("control status OUT submit failed: %d", err);
-			}
-			/*
-			 * STATUS OUT completion reached via RXPK path.
-			 * Re-arm SETUP immediately for the next control transaction.
-			 */
-			err = usbd_ctrl_feed_dout(dev, SETUP_PKT_SIZE);
-			if (err == -ENOMEM) {
-				LOG_ERR("CTL[rx-status-out] setup refill failed: %d", err);
-			}
-		} else {
-			err = usbd_ctrl_feed_dout(dev, SETUP_PKT_SIZE);
-			if (err == -ENOMEM) {
-				err = udc_submit_ep_event(dev, buf, err);
-			}
+			net_buf_unref(buf);
+			break;
+		}
 
-			udc_ctrl_update_stage(dev, buf);
-			if (udc_ctrl_stage_is_status_in(dev)) {
-				err = udc_ctrl_submit_s_out_status(dev, buf);
-				if (err != 0) {
-					LOG_ERR("control OUT status-IN submit failed: %d", err);
+		if (udc_ctrl_stage_is_data_out(dev) && data->setup != NULL) {
+			const uint16_t expected_len = udc_data_stage_length(data->setup);
+			const size_t have_len = udc_nct_buf_total_len(buf);
+
+			if (have_len < expected_len && evt->rx_len == CEP_MAX_PKT_SIZE) {
+				struct udc_ep_config *out_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
+
+				LOG_DBG("CTL RXPK partial: have=%u expect=%u last_pkt=%u",
+					(uint32_t)have_len,
+					(uint32_t)expected_len,
+					(uint32_t)evt->rx_len);
+udc_nct_log_ep0_out_head(dev, "partial-before-requeue");
+
+				if (out_cfg == NULL) {
+					LOG_ERR("control OUT endpoint config missing");
+					net_buf_unref(buf);
+					priv->ctrl_out_active = NULL;
+					return;
 				}
+
+udc_nct_log_ctrl_buf_meta("CTL RXPK partial active", buf);
+				err = udc_nct_kick_ep(dev, out_cfg);
+				if (err != 0) {
+					LOG_ERR("control OUT re-arm failed: %d", err);
+				}
+
+				break;
+			}
+		}
+
+		if (udc_ctrl_stage_is_data_out(dev) && priv->ctrl_out_active == buf) {
+			priv->ctrl_out_active = NULL;
+		}
+
+		err = usbd_ctrl_feed_dout(dev, SETUP_PKT_SIZE);
+		if (err == -ENOMEM) {
+			err = udc_submit_ep_event(dev, buf, err);
+		}
+udc_nct_log_ep0_out_head(dev, "rxpk-after-setup-feed");
+
+		udc_ctrl_update_stage(dev, buf);
+		if (udc_ctrl_stage_is_status_in(dev)) {
+udc_nct_log_ctrl_buf_meta("CTL RXPK submit status-in", buf);
+			err = udc_ctrl_submit_s_out_status(dev, buf);
+			if (err != 0) {
+				LOG_ERR("control OUT status-IN submit failed: %d", err);
 			}
 		}
 		break;
@@ -993,6 +1288,25 @@ static void udc_nct_ctrl_process_evt(const struct device *dev,
 			} else {
 				LOG_DBG("CTL[stsdone] status-in without IN buffer");
 			}
+			/* prepare for next SETUP. */
+			err = udc_nct_rearm_setup_stage(dev, "stsdone-status-in");
+		} else if (udc_ctrl_stage_is_data_in(dev)) {
+			/*
+			 * Zero-length DATA_IN completion uses STSDONE on this controller.
+			 * Re-enter the common control-IN completion path so it can advance
+			 * from DATA_IN to STATUS_OUT after the requested ZLP is sent.
+			 */
+			struct net_buf *in_buf = udc_buf_get(dev, USB_CONTROL_EP_IN);
+
+			if (in_buf != NULL) {
+				udc_ep_set_busy(dev, USB_CONTROL_EP_IN, false);
+				err = udc_nct_handle_ctrl_in_done(dev, in_buf, NULL);
+				if (err != 0) {
+					LOG_ERR("control data IN ZLP completion failed: %d", err);
+				}
+			} else {
+				LOG_DBG("CTL[stsdone] data-in zlp without IN buffer");
+			}
 		} else if (udc_ctrl_stage_is_status_out(dev)) {
 			/*
 			 * Some controllers signal STATUS OUT completion via STSDONE rather than
@@ -1013,12 +1327,9 @@ static void udc_nct_ctrl_process_evt(const struct device *dev,
 			} else {
 				LOG_DBG("CTL[stsdone] status-out without OUT buffer");
 			}
-		}
 
-		/* prepare for next SETUP. */
-		err = usbd_ctrl_feed_dout(dev, SETUP_PKT_SIZE);
-		if (err == -ENOMEM) {
-			LOG_ERR("CTL[stsdone] setup refill failed: %d", err);
+			/* prepare for next SETUP. */
+			err = udc_nct_rearm_setup_stage(dev, "stsdone-status-out");
 		}
 		break;
 
@@ -1036,11 +1347,13 @@ static void udc_nct_ctrl_process_evt(const struct device *dev,
 		}
 
 		/* Reset software queue state before re-arming control transfer flow. */
+		udc_nct_ctrl_drop_active_dout(dev, "bus-reset");
 		udc_nct_ep_purge_queued(dev, USB_CONTROL_EP_IN);
 		priv->ctrl_out_queued = 0U;
 		USBD->USBD_FADDR = 0;
 		usbd_reset_dma();
 		usbd_flush_all_ep();
+		udc_nct_reset_ep_ram_state(dev);
 		usbd_setup_control_pipe();
 		/* Drop latched CEP/EP status bits from pre-reset transactions. */
 		usbd_clear_all_ep_intsts();
@@ -1080,10 +1393,8 @@ static void udc_nct_cep_isr(const struct device *dev)
 	struct udc_nct_ctrl_evt evt = { 0 };
 	struct net_buf *buf;
 
-#if defined(DBG_USBD_IRQ)
 	LOG_DBG("CEP IRQ: raw=0x%08x en=0x%08x irq=0x%08x stage=%u", 
 		(uint32_t)cep_sts, (uint32_t)cep_en, (uint32_t)irq, (uint32_t)data->stage);
-#endif		
 
 	/*
 	 * Check STSDONE before SETUP to ensure correct event ordering when both
@@ -1099,7 +1410,19 @@ static void udc_nct_cep_isr(const struct device *dev)
 		} else {
 			evt.setup_seq = priv->dbg_setup_seq;
 		}
+
 		udc_nct_ctrl_enqueue_evt(dev, &evt);
+	}
+
+
+	if (IS_BIT_SET(irq, NCT_USBD_CEPINTSTS_SETUPTKIF)) {
+		USBD->USBD_CEPINTSTS = BIT(NCT_USBD_CEPINTSTS_SETUPTKIF);
+
+		if (udc_ep_is_busy(dev, USB_CONTROL_EP_OUT) || udc_ep_is_busy(dev, USB_CONTROL_EP_IN)) {
+			LOG_ERR("SETUPTKIF while CEP busy, ceps=0x%08x cepe=0x%08x",
+				(uint32_t)USBD->USBD_CEPINTSTS,
+				(uint32_t)USBD->USBD_CEPINTEN);
+		}
 	}
 
 	if (IS_BIT_SET(irq, NCT_USBD_CEPINTSTS_SETUPPKIF)) {
@@ -1107,16 +1430,6 @@ static void udc_nct_cep_isr(const struct device *dev)
 
 		udc_ep_set_busy(dev, USB_CONTROL_EP_OUT, false);
 		udc_ep_set_busy(dev, USB_CONTROL_EP_IN, false);
-
-		struct udc_ep_config *ep0_out_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
-		if (ep0_out_cfg != NULL) {
-			ep0_out_cfg->stat.halted = false;
-		}
-
-		struct udc_ep_config *ep0_in_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
-		if (ep0_in_cfg != NULL) {
-			ep0_in_cfg->stat.halted = false;
-		}
 
 		// copy setup packet from hardware registers to private buffer
 		priv->setup[0] = (uint8_t)(USBD->USBD_SETUP1_0 & 0xfful);
@@ -1128,29 +1441,30 @@ static void udc_nct_cep_isr(const struct device *dev)
 		priv->setup[6] = (uint8_t)(USBD->USBD_SETUP7_6 & 0xfful);
 		priv->setup[7] = (uint8_t)((USBD->USBD_SETUP7_6 >> 8) & 0xfful);	
 
-#if defined(DBG_USBD_IRQ)		
-		LOG_DBG("SETUP bm=0x%02x bReq=0x%02x wValue=0x%04x wIndex=0x%04x wLen=%u stage=%u",
+		LOG_INF("SETUP bm=0x%02x bReq=0x%02x wValue=0x%04x wIndex=0x%04x wLen=%u stage=%u",
 			priv->setup[0],
 			priv->setup[1],
 			(uint32_t)(priv->setup[2] | ((uint16_t)priv->setup[3] << 8)),
 			(uint32_t)(priv->setup[4] | ((uint16_t)priv->setup[5] << 8)),
 			(uint32_t)(priv->setup[6] | ((uint16_t)priv->setup[7] << 8)),
 			(uint32_t)data->stage);
-#endif			
 
 		priv->dbg_setup_seq++;
 
+		// copy setup packet to a net_buf and enqueue for processing in thread context
 		buf = udc_buf_get(dev, USB_CONTROL_EP_OUT);
 		if (buf == NULL) {
-			/* buffer might be allocated in the event handler for the last event*/
 			return;
 		}
 
 		udc_nct_ctrl_out_buf_popped(dev);
+LOG_DBG("CTL SETUP pop setup#%u queued=%u", (uint32_t)priv->dbg_setup_seq, (uint32_t)priv->ctrl_out_queued);
 
 		net_buf_reset(buf);
 		net_buf_add_mem(buf, priv->setup, SETUP_PKT_SIZE);
 		udc_ep_buf_set_setup(buf);
+udc_nct_log_ctrl_buf_meta("CTL SETUP pop buf", buf);
+udc_nct_log_ep0_out_head(dev, "setup-pop-next-head");
 
 		evt.type = CTRL_EVT_SETUP;
 		evt.setup_seq = priv->dbg_setup_seq;
@@ -1160,25 +1474,71 @@ static void udc_nct_cep_isr(const struct device *dev)
 
 	if (IS_BIT_SET(irq, NCT_USBD_CEPINTSTS_RXPKIF)) {
 		uint32_t len;
-		uint32_t i;
+		uint32_t copied;
+		size_t have_len = 0U;
+		uint16_t expected_len = 0U;
 		bool was_status_out;
 
 		USBD->USBD_CEPINTSTS = BIT(NCT_USBD_CEPINTSTS_RXPKIF);
 
 		// data_out or status_out packet received, read bytes from hardware registers to buffer
 		len = USBD->USBD_CEPDATCNT & 0xFFFFul;
-		buf = udc_buf_get(dev, USB_CONTROL_EP_OUT);
-		if (buf != NULL) {
-			udc_nct_ctrl_out_buf_popped(dev);
+		was_status_out = udc_ctrl_stage_is_status_out(dev);
+		if (udc_ctrl_stage_is_data_out(dev) && priv->ctrl_out_active != NULL) {
+			buf = priv->ctrl_out_active;
+			LOG_DBG("CTL RXPK use active OUT len=%u stage=%u setup#%u",
+				(uint32_t)len,
+				(uint32_t)data->stage,
+				(uint32_t)priv->dbg_setup_seq);
+udc_nct_log_ctrl_buf_meta("CTL RXPK active buf", buf);
+		} else {
+			buf = udc_buf_get(dev, USB_CONTROL_EP_OUT);
+		}
 
-			was_status_out = udc_ctrl_stage_is_status_out(dev);
-			for (i = 0U; i < len; i++) {
-				if (net_buf_tailroom(buf) > 0) {
-					net_buf_add_u8(buf, USBD->USBD_CEPDAT_BYTE);
-				}
+		if (buf != NULL) {
+			if (buf != priv->ctrl_out_active) {
+				udc_nct_ctrl_out_buf_popped(dev);
+				LOG_DBG("CTL RXPK pop len=%u queued=%u stage=%u setup#%u",
+					(uint32_t)len,
+					(uint32_t)priv->ctrl_out_queued,
+					(uint32_t)data->stage,
+					(uint32_t)priv->dbg_setup_seq);
+udc_nct_log_ctrl_buf_meta("CTL RXPK pop buf", buf);
+udc_nct_log_ep0_out_head(dev, "rxpk-pop-next-head");
+			}
+
+			copied = udc_nct_read_cep_into_buf(buf, len);
+			if (copied != len) {
+				LOG_WRN("CEP RX copied %u of %u bytes", copied, len);
+			}
+
+			have_len = udc_nct_buf_total_len(buf);
+			if (udc_ctrl_stage_is_data_out(dev) && data->setup != NULL) {
+				expected_len = udc_data_stage_length(data->setup);
 			}
 
 			udc_ep_set_busy(dev, USB_CONTROL_EP_OUT, false);
+
+			if (buf == priv->ctrl_out_active && expected_len > 0U &&
+			    have_len < expected_len && len == CEP_MAX_PKT_SIZE) {
+				struct udc_ep_config *out_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
+
+				LOG_DBG("CTL RXPK partial in ISR: have=%u expect=%u last_pkt=%u",
+					(unsigned int)have_len,
+					(unsigned int)expected_len,
+					(unsigned int)len);
+
+				if (out_cfg == NULL) {
+					LOG_ERR("control OUT endpoint config missing");
+					return;
+				}
+
+				if (udc_nct_kick_ep(dev, out_cfg) != 0) {
+					LOG_ERR("control OUT partial re-arm failed");
+				}
+
+				return;
+			}
 
 			evt.type = CTRL_EVT_RXPK;
 			evt.buf = buf;
@@ -1260,7 +1620,7 @@ static void udc_nct_isr(const struct device *dev)
 	/* get interrupt status */
 	IrqStL = USBD->USBD_GINTSTS & USBD->USBD_GINTEN;
 	/* Avoid log flood in ISR hot path; enable only for focused debugging. */
-	/* LOG_DBG("isr: GINTSTS=0x%08x GINTEN=0x%08x", USBD->USBD_GINTSTS, USBD->USBD_GINTEN); */
+	LOG_DBG("isr: GINTSTS=0x%08x GINTEN=0x%08x", USBD->USBD_GINTSTS, USBD->USBD_GINTEN);
 	if (!IrqStL) {
 		return;
 	}
@@ -1368,6 +1728,11 @@ static void udc_nct_isr(const struct device *dev)
 			continue;
 		}
 
+		if (!in) {
+			LOG_DBG("EP%d OUT IRQ: raw=0x%08x en=0x%08x irq=0x%08x", ep_hw,
+				epintsts_raw, USBD->EP[ep_hw].USBD_EPINTEN, irq_ep);
+		}
+
 #if defined(DBG_USBD_IRQ)		
 		LOG_DBG("EP%d%s IRQ: raw=0x%08x en=0x%08x irq=0x%08x", ep_hw, in ? " IN" : " OUT", epintsts_raw, USBD->EP[ep_hw].USBD_EPINTEN, irq_ep);
 #endif
@@ -1442,7 +1807,6 @@ static void udc_nct_isr(const struct device *dev)
 
 		buf = udc_buf_get(dev, ep_addr);
 		if (buf == NULL) {
-LOG_DBG("EP%d%s IRQ: no buffer queued", ep_hw, in ? " IN" : " OUT");			
 			/*
 			 * No buffer queued for this endpoint yet.
 			 * Keep busy state unchanged; software layer (thread queue pump
@@ -1460,10 +1824,27 @@ LOG_DBG("EP%d IN IRQ: no buffer, disable INT to avoid ISR flood", ep_hw);
 
 		if (!in) {
 			uint32_t len = USBD->EP[ep_hw].USBD_EPDATCNT & 0xFFFFul;
-#if defined(DBG_USBD_IRQ)		
-			LOG_DBG("EP%d OUT PKT: len=%u buf_len=%u", ep_hw, len, buf->len);
-#endif
 			usbd_read_ep(ep_hw, buf, len);
+			udc_ep_set_busy(dev, ep_addr, false);
+			udc_submit_ep_event(dev, buf, 0);
+
+			while (true) {
+				uint32_t pending_len = USBD->EP[ep_hw].USBD_EPDATCNT & 0xFFFFul;
+
+				if (pending_len == 0U) {
+					break;
+				}
+
+				buf = udc_buf_get(dev, ep_addr);
+				if (buf == NULL) {
+					break;
+				}
+
+				usbd_read_ep(ep_hw, buf, pending_len);
+				udc_submit_ep_event(dev, buf, 0);
+			}
+
+			continue;
 		} else {
 			/*
 			 * FIFO empty: all packets for this transfer have been ACKed by host.
@@ -1624,6 +2005,8 @@ static int udc_nct_ep_enable(const struct device *dev,
 		/* Reserve CEP shared RAM [0..63] for control endpoint. */
 		if (priv->ram_offset == 0) {
 			usbd_set_ep_buf_addr(NCT_EP_CEP, CEP_BUF_BASE, CEP_MAX_PKT_SIZE);	
+LOG_DBG("CEP RAM range: [%u..%u] (%u bytes)", USBD->USBD_CEPBUFSTART, USBD->USBD_CEPBUFEND, 
+USBD->USBD_CEPBUFEND - USBD->USBD_CEPBUFSTART + 1);
 			priv->ram_offset = CEP_MAX_PKT_SIZE;
 
 			USBD->USBD_GINTEN |= BIT(NCT_USBD_GINTEN_CEPIEN);			
@@ -1781,7 +2164,6 @@ static int udc_nct_enable(const struct device *dev)
 	const struct udc_nct_config *config = dev->config;
 	struct udc_nct_data *priv = udc_get_private(dev);
 	int err;
-	uint64_t st;
 
 	LOG_DBG("Enable device %p", dev);
 
@@ -1801,26 +2183,7 @@ static int udc_nct_enable(const struct device *dev)
 		return err;
 	}
 
-	/* Enable USB PHY */
-	USBD->USBD_PHYCTL |= BIT(NCT_USBD_PHYCTL_PHYEN);
-
-	/* Wait PHY clock ready */
-	/* Don't access other USBD registers */
-	st = k_uptime_get();
-	while (1) {
-		if (k_uptime_get() - st > NCT_USB_PHY_TIMEOUT) {
-			LOG_ERR("Timeout: USB PHY!");
-			return -ETIMEDOUT;
-		}
-
-		USBD->EP[EPA].USBD_EPMPS = 0x20;
-		if (USBD->EP[EPA].USBD_EPMPS == 0x20ul) {
-			USBD->EP[EPA].USBD_EPMPS = 0x0ul;
-			break;
-		}
-	}
-
-	// PHY ready, enable pull-up to signal presence to host
+	/* PHY ready, enable pull-up to signal presence to host. */
 	USBD->USBD_PHYCTL |= BIT(NCT_USBD_PHYCTL_DPPUEN);
 
 	usbd_reset_dma();
@@ -1901,6 +2264,27 @@ static int udc_nct_driver_preinit(const struct device *dev)
 	struct udc_data *data = dev->data;
 	struct udc_nct_data *priv = udc_get_private(dev);
 	int err;
+
+	uint64_t st;
+
+	/* Enable USB PHY and drive SE0 */
+	USBD->USBD_PHYCTL = BIT(NCT_USBD_PHYCTL_PHYEN);
+
+	/* Wait PHY clock ready */
+	/* Don't access other USBD registers */
+	st = k_uptime_get();
+	while (1) {
+		if (k_uptime_get() - st > NCT_USB_PHY_TIMEOUT) {
+			LOG_ERR("Timeout: USB PHY!");
+			return -ETIMEDOUT;
+		}
+
+		USBD->EP[EPA].USBD_EPMPS = 0x20;
+		if (USBD->EP[EPA].USBD_EPMPS == 0x20ul) {
+			USBD->EP[EPA].USBD_EPMPS = 0x0ul;
+			break;
+		}
+	}
 
 	priv->dev = dev;
 	priv->ram_offset = 0;
