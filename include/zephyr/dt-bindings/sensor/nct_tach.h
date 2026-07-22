@@ -18,6 +18,8 @@
 #define NCT_TACH_PIN_SELECT_7		7
 #define NCT_TACH_PIN_SELECT_8		8
 #define NCT_TACH_PIN_SELECT_9		9
+#define NCT_TACH_PIN_SELECT_10		10
+#define NCT_TACH_PIN_SELECT_11		11
 
 /* NCT tachometer specific operate frequency */
 #define NCT_TACH_FREQ_LFCLK 32768

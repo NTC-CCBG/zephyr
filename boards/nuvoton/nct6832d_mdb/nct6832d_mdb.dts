@@ -208,13 +208,134 @@
 	status = "okay";
 };
 
+/* Enable MFT1 controller with LFCLK source */
 &tach1 {
-	pin-select = <NCT_TACH_PIN_SELECT_4>; /* Select tach pin 4 as input pin */
-	sample-clk = <NCT_TACH_FREQ_LFCLK>; /* Use LFCLK as sampling clock */
-	pulses-per-round = <2>; /* number of pulses per round of encoder */
-	pinctrl-0 = <&ta4_sl_gpa1>;
-	pinctrl-names = "default";
+	clocks = <&pcc NCT_CLOCK_MFT1_LF>;
 	status = "okay";
+};
+
+/* Tachometer inputs: fan0-fan11 on TA0-TA11, all multiplexed through MFT1 */
+/ {
+	fan0_tach: fan0-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_0>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta0_sl_gp83>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan1_tach: fan1-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_1>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta1_sl_gp05>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan2_tach: fan2-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_2>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta2_sl_gp37>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan3_tach: fan3-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_3>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta3_sl_gp81>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan4_tach: fan4-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_4>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta4_sl_gpa1>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan5_tach: fan5-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_5>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta5_sl_gpa4>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan6_tach: fan6-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_6>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta6_sl_gpa6>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan7_tach: fan7-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_7>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta7_sl_gp01>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan8_tach: fan8-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_8>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta8_sl_gp03>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan9_tach: fan9-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_9>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta9_sl_gp07>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan10_tach: fan10-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_10>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta10_sl_gp32>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
+	fan11_tach: fan11-tach {
+		compatible = "nuvoton,nct-tach-input";
+		mft = <&tach1>;
+		pin-select = <NCT_TACH_PIN_SELECT_11>;
+		sample-clk = <NCT_TACH_FREQ_LFCLK>;
+		pulses-per-round = <2>;
+		pinctrl-0 = <&ta11_sl_gpc1>;
+		pinctrl-names = "default";
+		status = "okay";
+	};
 };
 
 &c2h {
