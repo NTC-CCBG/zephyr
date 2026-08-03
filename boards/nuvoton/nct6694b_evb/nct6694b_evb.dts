@@ -122,13 +122,13 @@
 
 &usbd20 {
 	maximum-speed = "high-speed";
-	status = "okay";
+	status = "disabled";
 	pinctrl-0 = <&usbdphy_en &usbdphy_clk_external>;
 	pinctrl-names = "default";
 };
 
 zephyr_udc0: &usbd20 {
-	status = "okay";
+	status = "disabled";
 };
 
 &emac {
