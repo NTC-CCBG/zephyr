@@ -2809,12 +2809,12 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	struct nct_i3c_data *data = dev->data;
 
-	/* The request or the payload were not specific */
+	/* The request must be present, and a non-empty payload must have a buffer. */
 	if ((request == NULL) || ((request->payload_len) && (request->payload == NULL))) {
 		return -EINVAL;
 	}
 
-	/* The I3C was not in target mode or the bus is in HDR mode now */
+	/* IBI can only be raised while the I3C instance is an SDR target. */
 	if (!(IS_BIT_SET(i3c_inst->CONFIG, NCT_I3C_CONFIG_TGTENA)) ||
 	    (IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_STHDR))) {
 		return -EINVAL;
@@ -2831,7 +2831,7 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 			return -EINVAL;
 		}
 
-		/* The payload length is too long */
+		/* The payload must fit in the supported IBI payload buffer. */
 		if (request->payload_len > I3C_IBI_MAX_PAYLOAD_SIZE) {
 			LOG_ERR("IBI payload too long, use dma instead");
 			return -EINVAL;
@@ -2840,10 +2840,10 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 		k_sem_take(&data->target_event_lock_sem, K_FOREVER);
 		set_oper_state(dev, I3C_OP_STATE_IBI);
 
-		/* Mandatory data byte */
+		/* The first byte is the mandatory IBI data byte. */
 		SET_FIELD(i3c_inst->CTRL, NCT_I3C_CTRL_IBIDATA, request->payload[0]);
 
-		/* Extended data */
+		/* Send any remaining bytes through the target TX path. */
 		if (request->payload_len > 1) {
 #ifdef CONFIG_I3C_NCT_DMA
 			int ret;
@@ -2857,7 +2857,7 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 #else
 			int index;
 
-			/* For transaction > 16 bytes, use dma to avoid bus underrun. */
+			/* Write the extended payload, leaving the final byte for WDATABE. */
 			for (index = 1; index < (request->payload_len - 1); index++) {
 				i3c_inst->WDATAB = request->payload[index];
 			}
@@ -2876,10 +2876,7 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 			return -ENOTSUP;
 		}
 
-		/*
-		 * The bus controller request was generate only a target with controller mode
-		 * capabilities mode
-		 */
+		/* Controller-role requests are supported only by controller-capable targets. */
 		if (GET_FIELD(i3c_inst->MCONFIG, NCT_I3C_MCONFIG_CTRENA) !=
 		    MCONFIG_CTRENA_CAPABLE) {
 			return -ENOTSUP;
@@ -2893,6 +2890,18 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 		break;
 
 	case I3C_IBI_HOTJOIN:
+		/*
+		 * Reset the target-side state before issuing Hot-Join. The sequence is:
+		 *   1) disable the I3C interrupt
+		 *   2) stop DMA and flush the target FIFOs
+		 *   3) clear pending status and error flags
+		 *   4) reset the I3C module
+		 *   5) restore the target registers saved above
+		 *   6) disable TGTENA while issuing the event
+		 *   7) issue CTRL_EVENT_HJ
+		 *   8) re-enable TGTENA and arm the fixed RX DMA buffer
+		 *   9) clear pending status and re-enable the I3C interrupt
+		 */
 		if (IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_HJDIS)) {
 			return -ENOTSUP;
 		}
@@ -2900,9 +2909,66 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 		k_sem_take(&data->target_event_lock_sem, K_FOREVER);
 		set_oper_state(dev, I3C_OP_STATE_IBI);
 
-		i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_TGTENA);
-		SET_FIELD(i3c_inst->CTRL, NCT_I3C_CTRL_EVENT, CTRL_EVENT_HJ);
-		i3c_inst->CONFIG |= BIT(NCT_I3C_CONFIG_TGTENA);
+		/* 1) Disable the I3C interrupt while resetting target-side state. */
+		irq_disable(data->irq);
+		NVIC_ClearPendingIRQ(data->irq);
+
+		/* Save target registers that must be restored after the module reset. */
+		uint32_t intset = i3c_inst->INTSET;
+		uint32_t maxlimits = i3c_inst->MAXLIMITS;
+		uint32_t part = i3c_inst->PARTNO;
+		uint32_t idext = i3c_inst->IDEXT;
+		uint32_t vendor = i3c_inst->VENDORID;
+		uint32_t tcck = i3c_inst->TCCLOCK;
+		uint32_t ibiext1 = i3c_inst->IBIEXT1;
+		uint32_t ibiext2 = i3c_inst->IBIEXT2;
+
+		/* 2) Stop DMA and drain pending target FIFO state. */
+#ifdef CONFIG_I3C_NCT_DMA
+		nct_i3c_target_dma_off(dev, true);
+		nct_i3c_target_dma_off(dev, false);
+#else
+    	nct_i3c_target_rx_fifo_flush(i3c_inst);
+    	nct_i3c_target_tx_fifo_flush(i3c_inst);		
+#endif
+
+		/* 3) Clear status and error state before issuing Hot-Join. */
+		nct_i3c_status_clear_all(i3c_inst);
+		nct_i3c_errwarn_clear_all(i3c_inst);
+
+		/* 4) Reset the I3C module. The fixed per-port RX buffers remain valid. */
+    	nct_i3c_reset_module(dev);
+
+		/* 5) Restore the saved target registers. */
+		i3c_inst->INTSET = intset;
+		i3c_inst->MAXLIMITS = maxlimits;
+		i3c_inst->PARTNO = part;
+		i3c_inst->IDEXT = idext;
+		i3c_inst->VENDORID = vendor;
+		i3c_inst->TCCLOCK = tcck;
+		i3c_inst->IBIEXT1 = ibiext1;
+		i3c_inst->IBIEXT2 = ibiext2;
+
+		/* 6) Disable TGTENA while issuing the Hot-Join event. */
+    	i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_TGTENA);
+
+		/* 7) Issue the Hot-Join event. */
+    	SET_FIELD(i3c_inst->CTRL, NCT_I3C_CTRL_EVENT, CTRL_EVENT_HJ);
+
+		/* 8) Re-enable TGTENA and arm the fixed RX DMA buffer in advance. */
+    	i3c_inst->CONFIG |= BIT(NCT_I3C_CONFIG_TGTENA);
+
+		init_i3c_slave_rx_payload(dev);
+		nct_i3c_target_rx_read(dev);
+
+		/* 9) Clear pending status and re-enable the I3C interrupt. */
+		i3c_inst->STATUS = i3c_inst->STATUS; /* W1C */
+		if (i3c_inst->INTMASKED) {
+			LOG_ERR("HJ intmasked=0x%08X", i3c_inst->INTMASKED);
+			return -EIO;
+		}
+		
+		irq_enable(data->irq);
 		break;
 
 	default:
@@ -3634,13 +3700,13 @@ static int nct_i3c_target_init(const struct device *dev)
 
 	config_target->enable = true;
 
-	/* setup rx dma in advance to prevent data loss for RX FIFO is too small */
-	init_i3c_slave_rx_payload(dev);
-	nct_i3c_target_rx_read(dev);
-
 	/* Flush target rx and tx fifo */
 	nct_i3c_target_tx_fifo_flush(i3c_inst);
 	nct_i3c_target_rx_fifo_flush(i3c_inst);
+
+	/* setup rx dma in advance to prevent data loss for RX FIFO is too small */
+	init_i3c_slave_rx_payload(dev);
+	nct_i3c_target_rx_read(dev);
 
 	return 0;
 }
@@ -4095,6 +4161,7 @@ const struct i3c_driver_api nct_i3c_driver_api = {
 		.config_target.max_read_len = DT_INST_PROP_OR(inst, maximum_read, 256),              \
 		.config_target.max_write_len = DT_INST_PROP_OR(inst, maximum_write, 256),            \
 		.config_target.supported_hdr = false,                                              \
+		.irq = DT_INST_IRQN(inst),															\
 	};                                                                                            \
 	DEVICE_DT_INST_DEFINE(inst, nct_i3c_init, NULL, &nct_i3c_data_##inst,                    \
 			      &nct_i3c_config_##inst, POST_KERNEL,                        \

@@ -157,6 +157,8 @@ struct nct_i3c_data {
 	struct k_sem sync_sem;         /* Semaphore used for synchronization */
 	struct k_sem ibi_lock_sem;     /* Semaphore used for ibi */
 
+	int irq;
+
 	/* Target data */
 	struct i3c_target_config *target_config;
 	/* Configuration parameters for I3C hardware to act as target device */

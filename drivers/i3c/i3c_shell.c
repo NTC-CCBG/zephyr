@@ -529,6 +529,7 @@ static int cmd_i3c_ccc_setdasa(const struct shell *shell_ctx, size_t argc, char 
 {
 	const struct device *dev, *tdev;
 	struct i3c_device_desc *desc;
+	struct i3c_ccc_address new_da;
 	int ret;
 
 	dev = device_get_binding(argv[ARGV_DEV]);
@@ -547,7 +548,8 @@ static int cmd_i3c_ccc_setdasa(const struct shell *shell_ctx, size_t argc, char 
 		return -ENODEV;
 	}
 
-	ret = i3c_ccc_do_setdasa(desc);
+	new_da.addr = desc->init_dynamic_addr ? desc->init_dynamic_addr : desc->static_addr;
+	ret = i3c_ccc_do_setdasa(desc, new_da);
 	if (ret < 0) {
 		shell_error(shell_ctx, "I3C: unable to send CCC SETDASA.");
 		return ret;
@@ -1471,6 +1473,26 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_SUBCMD_SET_END /* Array terminated. */
 );
 
+
+// Target shell command set for I3C commands
+static int cmd_i3c_hotjoin(const struct shell *shell_ctx, size_t argc, char **argv)
+{
+    const struct device *dev = device_get_binding(argv[1]);
+    struct i3c_ibi req = {
+        .ibi_type = I3C_IBI_HOTJOIN,
+        .payload = NULL,
+        .payload_len = 0,
+    };
+
+    if (!dev) {
+        shell_error(shell_ctx, "device not found");
+        return -ENODEV;
+    }
+
+    return i3c_ibi_raise(dev, &req);
+}
+
+
 /* L1 I3C Shell Commands*/
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_i3c_cmds,
@@ -1522,6 +1544,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      "Send I3C CCC\n"
 		      "Usage: ccc <sub cmd>",
 		      NULL, 3, 0),
+	/* Target-specific I3C commands */
+	SHELL_CMD_ARG(hotjoin, NULL,
+		      "Send I3C hot-join IBI\n"
+		      "Usage: i3c hotjoin <device>",
+		      cmd_i3c_hotjoin, 2, 0),
+
 	SHELL_SUBCMD_SET_END /* Array terminated. */
 );
 
