@@ -542,6 +542,48 @@ static void i2c_nct_target_isr(const struct device *dev)
 	}
 
 	/* --------------------------------------------- */
+	/* SDA status is set - transmit or receive       */
+	/* --------------------------------------------- */
+	if (inst->SMBnST & BIT(NCT_SMBnST_SDAST)) {
+		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
+			/* Over Flow */
+			overflow_data = inst->SMBnSDA;
+
+			len = 0;
+			while (len < i2c_nct_get_dma_cnt(dev)) {
+				if (target_cb->write_received(data->target_cfg, data->rx_buf[len]))
+					break;
+
+				len++;
+			}
+			target_cb->write_received(data->target_cfg, overflow_data);
+			data->target_oper_state = I2C_NCT_OPER_STA_START;
+		} else {
+			/* No Enough DMA data to send */
+			inst->SMBnSDA = 0xFF;
+		}
+	}
+
+	/* --------------------------------------------- */
+	/* Target STOP occurred                          */
+	/* --------------------------------------------- */
+	if (inst->SMBnST & BIT(NCT_SMBnST_SLVSTP)) {
+		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
+			len = 0;
+			while (len < i2c_nct_get_dma_cnt(dev)) {
+				target_cb->write_received(data->target_cfg, data->rx_buf[len]);
+				len++;
+			}
+		}
+		if (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) {
+			target_cb->stop(data->target_cfg);
+		}
+		data->target_oper_state = I2C_NCT_OPER_STA_START;
+		/* clear STOP flag */
+		inst->SMBnST = BIT(NCT_SMBnST_SLVSTP);
+	}
+
+	/* --------------------------------------------- */
 	/* Address match occurred                        */
 	/* --------------------------------------------- */
 	if (inst->SMBnST & BIT(NCT_SMBnST_NMATCH)) {
@@ -588,48 +630,6 @@ static void i2c_nct_target_isr(const struct device *dev)
 		}
 		/* Clear address match bit & SDA pull high */
 		inst->SMBnST = BIT(NCT_SMBnST_NMATCH);
-	}
-
-	/* --------------------------------------------- */
-	/* SDA status is set - transmit or receive       */
-	/* --------------------------------------------- */
-	if (inst->SMBnST & BIT(NCT_SMBnST_SDAST)) {
-		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
-			/* Over Flow */
-			overflow_data = inst->SMBnSDA;
-
-			len = 0;
-			while (len < i2c_nct_get_dma_cnt(dev)) {
-				if (target_cb->write_received(data->target_cfg, data->rx_buf[len]))
-					break;
-
-				len++;
-			}
-			target_cb->write_received(data->target_cfg, overflow_data);
-			data->target_oper_state = I2C_NCT_OPER_STA_START;
-		} else {
-			/* No Enough DMA data to send */
-			inst->SMBnSDA = 0xFF;
-		}
-	}
-
-	/* --------------------------------------------- */
-	/* Target STOP occurred                          */
-	/* --------------------------------------------- */
-	if (inst->SMBnST & BIT(NCT_SMBnST_SLVSTP)) {
-		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
-			len = 0;
-			while (len < i2c_nct_get_dma_cnt(dev)) {
-				target_cb->write_received(data->target_cfg, data->rx_buf[len]);
-				len++;
-			}
-		}
-		if (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) {
-			target_cb->stop(data->target_cfg);
-		}
-		data->target_oper_state = I2C_NCT_OPER_STA_START;
-		/* clear STOP flag */
-		inst->SMBnST = BIT(NCT_SMBnST_SLVSTP);
 	}
 }
 
@@ -727,15 +727,13 @@ static void i2c_nct_isr(const struct device *dev)
 	struct i2c_reg *const inst = I2C_INSTANCE(dev);
 	struct i2c_nct_data *data = dev->data;
 
-	if (data->ctrl_oper_state != I2C_NCT_OPER_STA_IDLE) {
-		i2c_nct_ctrl_isr(dev);
+	if ((inst->SMBnST & BIT(NCT_SMBnST_NMATCH))||
+		(data->target_oper_state == I2C_NCT_OPER_STA_WRITE) ||
+		(data->target_oper_state == I2C_NCT_OPER_STA_READ) ||
+		(data->target_oper_state == I2C_NCT_OPER_STA_QUICK)) {
+		i2c_nct_target_isr(dev);
 	} else {
-		if (data->target_oper_state == I2C_NCT_OPER_STA_IDLE) {
-			/* clear all interrupt status */
-			inst->SMBnST = 0xFF;
-		} else {
-			i2c_nct_target_isr(dev);
-		}
+		i2c_nct_ctrl_isr(dev);
 	}
 }
 
@@ -861,29 +859,11 @@ static int i2c_nct_combine_msg(const struct device *dev,
 static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 				uint8_t num_msgs, uint16_t addr)
 {
-	uint8_t value;
-	struct i2c_reg *const inst = I2C_INSTANCE(dev);
-
-
 	struct i2c_nct_data *const data = dev->data;
 	int ret;
 
 	if (i2c_nct_mutex_lock(dev, I2C_WAITING_TIME) != 0) {
 		return -EBUSY;
-	}
-
-	/* check if bus is idle */
-	while (inst->SMBnCST & BIT(NCT_SMBnCST_BB));
-
-	/* Disable target addr 1 */
-	value = inst->SMBnADDR1;
-	inst->SMBnADDR1 &= ~BIT(NCT_SMBnADDR_SAEN);
-
-	/* the device has target function */
-	if (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) {
-		/* delay 60 us */
-		k_busy_wait(60);
-		while (data->target_oper_state != I2C_NCT_OPER_STA_START);
 	}
 
 	/* prepare data to transfer */
@@ -894,8 +874,6 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 	data->err_code = 0;
 	if (i2c_nct_combine_msg(dev, msgs, num_msgs) < 0) {
 		i2c_nct_mutex_unlock(dev);
-		/* restore target addr 1 */
-		inst->SMBnADDR1 = value;
 		return -EPROTONOSUPPORT;
 	}
 
@@ -904,8 +882,6 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 		if (num_msgs != 1) {
 			/* Quick command must have one msg */
 			i2c_nct_mutex_unlock(dev);
-			/* restore target addr 1 */
-			inst->SMBnADDR1 = value;
 			return -EPROTONOSUPPORT;
 		}
 		if ((msgs->flags & I2C_MSG_RW_MASK) == I2C_MSG_WRITE) {
@@ -936,9 +912,6 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 	}
 
 	i2c_nct_mutex_unlock(dev);
-
-	/* restore target addr 1 */
-	inst->SMBnADDR1 = value;
 
 	return ret;
 }
