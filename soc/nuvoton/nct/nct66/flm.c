@@ -369,6 +369,7 @@ void flm_cmb_enable(bool enable)
 }
 #endif
 
+#if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
 static int flm_nct_init(const struct device *dev)
 {
     LOG_DBG("Device name: %s", dev->name);
@@ -391,3 +392,4 @@ static int flm_nct_init(const struct device *dev)
                   CONFIG_KERNEL_INIT_PRIORITY_DEVICE, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(NCT_FLM_INIT)
+#endif /* DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT) */
