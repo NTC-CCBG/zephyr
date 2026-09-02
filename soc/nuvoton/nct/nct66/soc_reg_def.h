@@ -3856,9 +3856,104 @@ typedef enum {
 #define RTC_YEARALARM_Pos                                  (0)
 #define RTC_YEARALARM_Msk                                  (0xFF << RTC_YEARALARM_Pos)
 
+/*
+ * Flash Monitoring Core (FLM) device registers
+ */
+struct flm_reg {
+	/* 0x000: Configuration */
+	volatile uint32_t CFG;
+	/* 0x004: Status */
+	volatile uint32_t STAT;
+	/* 0x008: Log 0 ~ 1 */
+	volatile uint32_t LOG[2];
+	/* 0x010: Interrupt Enable */
+	volatile uint32_t IE;
+	/* 0x014: Control */
+	volatile uint32_t CTL;
+	volatile uint32_t reserved1[2];
+	/* 0x020: Range 0 ~ 7 */
+	volatile uint32_t RANG[8];
+	volatile uint32_t reserved2[8];
+	/* 0x060: Command Enable */
+	volatile uint32_t CMDEN;
+	/* 0x064: Command Byte Enable */
+	volatile uint32_t CMBEN;
+	volatile uint32_t reserved3[6];
+	/* 0x080: Command 0 ~ 31 */
+	volatile uint32_t CMD[32];
+	/* 0x100: Transaction Counter Read A0 ~ A3 */
+	volatile uint32_t TCRA[4];
+	/* 0x110: Transaction Counter Read B0 ~ B3 */
+	volatile uint32_t TCRB[4];
+	volatile uint32_t reserved4[8];
+	/* 0x140: Transaction Counter Control A0 ~ A3 */
+	volatile uint32_t TCCA[4];
+	/* 0x150: Transaction Counter Control B0 ~ B3 */
+	volatile uint32_t TCCB[4];
+	volatile uint32_t reserved5[8];
+	/* 0x180: Command Event */
+	volatile uint32_t CMDEV;
+	/* 0x184: Command Byte Event */
+	volatile uint32_t CMBEV;
+	/* 0x188: Transaction Counter Global Clear */
+	volatile uint32_t TCGC;
+	volatile uint32_t reserved6[13];
+	/* 0x1C0: Command Qualifier 0 ~ 3 */
+	volatile uint32_t CQ[4];
+	volatile uint32_t reserved7[44];
+	/* 0x280: Command Byte 0 ~ 31 */
+	volatile uint32_t CMB[32];
+};
+
+/* FLM register fields */
+#define NCT_FLM_CFG_DEVSIZ_FIELD             FIELD(0, 3)
+#define NCT_FLM_CFG_EBCHKDIS                 3
+#define NCT_FLM_CFG_CSOBYP                   14
+#define NCT_FLM_CFG_MON_MD                   15
+#define NCT_FLM_CFG_ALIAS                    29
+
+#define NCT_FLM_STAT_RJ_EV                   0
+#define NCT_FLM_STAT_SCI_EV                  1
+#define NCT_FLM_STAT_TCR_EV                  3
+#define NCT_FLM_STAT_RJ_TP1_FIELD            FIELD(4, 3)
+#define NCT_FLM_STAT_RJ_TP2_FIELD            FIELD(7, 3)
+#define NCT_FLM_STAT_RJ_NO_FIELD             FIELD(16, 8)
+
+#define NCT_FLM_LOG_RJ_ADDR_FIELD            FIELD(0, 24)
+#define NCT_FLM_LOG_RJ_CMD_FIELD             FIELD(24, 8)
+
+#define NCT_FLM_IE_RJ_IE                     0
+#define NCT_FLM_IE_CSI_IE                    1
+#define NCT_FLM_IE_TCR_IE                    3
+
+#define NCT_FLM_CTL_RDY                      0
+#define NCT_FLM_CTL_CHANGE                   1
+#define NCT_FLM_CTL_RLCK_FIELD               FIELD(8, 8)
+#define NCT_FLM_CTL_MEN                      30
+#define NCT_FLM_CTL_LCK                      31
+
+#define NCT_FLM_RANG_STRTRANG_FIELD          FIELD(0, 16)
+#define NCT_FLM_RANG_LASTRANG_FIELD          FIELD(16, 16)
+
+#define NCT_FLM_CMD_CMD_FIELD                FIELD(0, 8)
+#define NCT_FLM_CMD_ADDSZ                    11
+#define NCT_FLM_CMD_DATBPCK_FIELD            FIELD(12, 2)
+#define NCT_FLM_CMD_ADBPCK_FIELD             FIELD(14, 2)
+#define NCT_FLM_CMD_DUMBPCK_FIELD            FIELD(16, 2)
+#define NCT_FLM_CMD_DUMB_FIELD               FIELD(18, 2)
+#define NCT_FLM_CMD_CLAR                     20
+#define NCT_FLM_CMD_CARSEL_FIELD             FIELD(24, 8)
+
+#define NCT_FLM_TCGC_TCCLR                   0
+
+#define NCT_FLM_CQ_QMASK_FIELD               FIELD(0, 8)
+#define NCT_FLM_CQ_QVAL_FIELD                FIELD(8, 8)
+#define NCT_FLM_CQ_QBYTE_FIELD               FIELD(16, 4)
+#define NCT_FLM_CQ_QPOL                      20
+#define NCT_FLM_CQ_QEN_FIELD                 FIELD(24, 8)
+
 /*---------------------- OTP -------------------------*/
-struct otp_reg {
-    __IO    uint8_t CTRL;                           /*!< [0x00]    OTP Control                                */
+struct otp_reg {    __IO    uint8_t CTRL;                           /*!< [0x00]    OTP Control                                */
     __IO    uint8_t ADDR_H;                         /*!< [0x01]    OTP address H Configuration                */
     __IO    uint8_t ADDR_L;                         /*!< [0x02]    OTP address L Configuration                */
     __IO    uint8_t ECODE;                          /*!< [0x03]    OTP entry code Configuration               */
