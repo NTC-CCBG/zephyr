@@ -13,8 +13,9 @@
 #include <zephyr/drivers/gpio.h>
 
 /* Support 8 - 4095 bytes */
+#define MAX_I3C_DATA_SIZE		256							// MRL / MWL
 #define MAX_I3C_PAYLOAD_SIZE	(MAX_I3C_DATA_SIZE + 0)
-#define MAX_I3C_DATA_SIZE		256							// 252 + 1 pec, or 256 
+#define I3C_NCT_RX_PUBLISH_QUEUE_DEPTH 4
 
 /* MIPI I3C MDB definition: see https://www.mipi.org/MIPI_I3C_mandatory_data_byte_values_public */
 #define IBI_MDB_ID(grp, id)		((((grp) << 5) & GENMASK(7, 5)) | ((id) & GENMASK(4, 0)))
@@ -180,6 +181,17 @@ struct nct_i3c_data {
 	int rx_payload_in;
 	int rx_payload_out;
 
+	/* RX snapshots are processed outside the I3C ISR. */
+	struct k_work rx_publish_work;
+	struct k_spinlock rx_publish_lock;
+	uint8_t rx_publish_buf[I3C_NCT_RX_PUBLISH_QUEUE_DEPTH][MAX_I3C_PAYLOAD_SIZE];
+	uint16_t rx_publish_len[I3C_NCT_RX_PUBLISH_QUEUE_DEPTH];
+	uint8_t rx_publish_in;
+	uint8_t rx_publish_out;
+	uint8_t rx_publish_count;
+	bool rx_publish_scheduled;
+	const struct device *dev;
+
 #else
 	uint8_t rx_buf[MAX_I3C_PAYLOAD_SIZE];
 	uint16_t rx_len;
@@ -204,7 +216,8 @@ struct nct_i3c_data {
 #endif
 
 #ifdef CONFIG_I3C_NCT_DMA
-	struct pdma_dsct_reg dsct_sg[4] __aligned(4); /* use for dma, 4-bytes align */
+	/* Points at this instance's fixed NCT_I3C_SG_DESC_PER_INSTANCE-entry slice of nct_i3c_sg_pool */
+	struct pdma_dsct_reg *dsct_sg;
 #endif
 
 	// for v2.6

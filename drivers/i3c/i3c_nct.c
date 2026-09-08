@@ -13,25 +13,44 @@
 #include "i3c_nct.h"
 
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/sys/crc.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(nct_i3c, CONFIG_I3C_LOG_LEVEL);
 
+#define NCT_I3C_RAM_CODE __attribute__((section(".ramfunc")))
+
 /* I3C properties */
 #define I3C_CHK_TIMEOUT_US       10000 /* Timeout for checking register status */
-#define I3C_CLK_FREQ_48_MHZ      MHZ(48)
-#define I3C_CLK_FREQ_96_MHZ      MHZ(96)
-#define I3C_SCL_PP_FREQ_MAX_MHZ 12500000
-#define I3C_SCL_OD_FREQ_MAX_MHZ 4170000
+
+#define I3C_CLK_FREQ_48_MHZ		MHZ(48)
+#define I3C_CLK_FREQ_96_MHZ		MHZ(96)
+
+#define I3C_SCL_PP_FREQ_MAX_MHZ	12500000
+#define I3C_SCL_OD_FREQ_MAX_MHZ 4170000		// pure i3c bus
+#define I3C_SCL_OD_FREQ_MIN_MHZ 1000000		// mixed i2c/i3c bus
+
 #define I3C_BUS_TLOW_PP_MIN_NS  24  /* T_LOW period in push-pull mode */
 #define I3C_BUS_TLOW_OD_MIN_NS  200 /* T_LOW period in open-drain mode */
+
 #define I3C_TGT_WR_REQ_WAIT_US   10  /* I3C target write request PDMA completion after stop */
+
+// #define BUSY_WAIT_FOR_STOP
+#define I3C_SDR_WR_STOP_WAIT_US  500 /* Bound on the in-ISR spin for STOP/Sr after an SDR write address match */
+
 #define I3C_FIFO_SIZE            16
 #define PPBAUD_DIV_MAX           0xF
 #define I2CBAUD_DIV_MAX          0xF
 #define DAA_TGT_INFO_SZ 0x8 /* 8 bytes = PID(6) + BCR(1) + DCR(1) */
 #define I3C_TRANS_TIMEOUT_MS     K_MSEC(1000) /*  Default maximum allow time for an I3C transfer */
-#define I3C_IBI_MAX_PAYLOAD_SIZE 32
+#define I3C_IBI_MAX_PAYLOAD_SIZE 8
+
+#define I3C_RX_BOUNDARY_BASIC                 0
+#define I3C_RX_BOUNDARY_MCTP_HEADER_PEC       1
+#define I3C_RX_BOUNDARY_UNUSED __attribute__((unused))
+
+#define I3C_RX_BOUNDARY_STRATEGY I3C_RX_BOUNDARY_BASIC
+
 #define I3C_STATUS_CLR_MASK                                                 \
 	(BIT(NCT_I3C_MSTATUS_TGTSTART) | BIT(NCT_I3C_MSTATUS_MCTRLDONE) | BIT(NCT_I3C_MSTATUS_COMPLETE) |      \
 	 BIT(NCT_I3C_MSTATUS_IBIWON) | BIT(NCT_I3C_MSTATUS_NOWCNTLR))
@@ -64,6 +83,31 @@ LOG_MODULE_REGISTER(nct_i3c, CONFIG_I3C_LOG_LEVEL);
 #define NCT_PDMA_BASE(n)         (n & 0xFFFFFF00)
 #define NCT_PDMA_DSCT_IDX(n)     ((n - (n & 0xFFFFFF00)) >> 4)
 #define NCT_PDMA_CHANNEL_PER_REQ 0x4
+/* Per instance: [0]=RX 1st, [1]=RX 2nd (reserved), [2]=TX 1st, [3]=TX 2nd */
+#define NCT_I3C_SG_DESC_PER_INSTANCE 4
+#define NCT_I3C_SG_POOL_DESC_COUNT   32
+#define NCT_PDMA_SCATBA_WINDOW_SIZE  0x10000
+
+/*
+ * Each I3C port owns a fixed RX/TX PDMA channel pair, 0x20 apart, hard-wired in
+ * the SoC (see nct66.dtsi pdma0..pdma11). Deriving the pool slot from that
+ * physical address (rather than the DT_INST enumeration ordinal, which only
+ * numbers currently-enabled nodes and shifts if the enabled set changes) keeps
+ * each port's slot fixed regardless of which other ports are enabled.
+ */
+#define NCT_I3C_PDMA_PAIR_IDX(inst) \
+	((uint8_t)((DT_INST_REG_ADDR_BY_IDX(inst, 1) & 0xFF) >> 5))
+
+#ifdef CONFIG_I3C_NCT_DMA
+/* PDMA_SCATBA is shared by every PDMA channel, so all I3C SG descriptors
+ * must be in one 64 KiB address window.
+ */
+static struct pdma_dsct_reg nct_i3c_sg_pool[NCT_I3C_SG_POOL_DESC_COUNT]
+	__aligned(NCT_I3C_SG_POOL_DESC_COUNT * sizeof(struct pdma_dsct_reg));
+
+BUILD_ASSERT(sizeof(nct_i3c_sg_pool) <= NCT_PDMA_SCATBA_WINDOW_SIZE,
+	     "I3C scatter-gather pool exceeds one PDMA_SCATBA window");
+#endif
 
 /* Supported I3C clock frequency */
 enum nct_i3c_clk_speed {
@@ -80,6 +124,13 @@ static const struct nct_i3c_timing_cfg nct_def_speed_cfg[] = {
 	[I3C_CLK_FREQ_96MHZ] = {.ppbaud = 3, .pplow = 0, .odhpp = 1, .odbaud = 4, .i2c_baud = 3},
 };
 
+// #define I3C_GPIO_DBG
+
+#ifdef I3C_GPIO_DBG
+#define SLV_IRQ_PIN  0   /* GPIO30 */
+#define SLV_MARK_PIN  1   /* GPIO31 */
+static const struct device *gpio3_dev = DEVICE_DT_GET(DT_NODELABEL(gpio3));
+#endif
 //============================================================
 void init_i3c_slave_rx_payload(const struct device *dev)
 {
@@ -112,6 +163,7 @@ void update_i3c_slave_rx_payload(const struct device *dev)
 
 	/* if queue full, skip the oldest un-read message */
 	if (data->rx_payload_in == data->rx_payload_out) {
+		LOG_ERR("I3C slave rx payload queue full, skip the oldest un-read message");		
 		data->rx_payload_out = (data->rx_payload_out + 1) % ARRAY_SIZE(data->pdma_rx_buf);
 	}
 }
@@ -121,11 +173,7 @@ static K_SEM_DEFINE(tx_fifo_empty_sem, 0, 1);
 
 // used by ap layer to wait for tx fifo empty
 int target_wait_for_tx_fifo_empty(k_timeout_t timeout) {
-    if (k_sem_take(&tx_fifo_empty_sem, timeout) == 0) {
-        return 0;
-    } else {
-        return -ETIMEDOUT;
-    }
+	return k_sem_take(&tx_fifo_empty_sem, timeout);
 }
 
 // used in i3c target isr to release semaphore
@@ -229,12 +277,12 @@ static void nct_i3c_enable_target_interrupt(const struct device *dev, bool enabl
 	}
 }
 
-static inline void nct_i3c_target_rx_fifo_flush(struct i3c_reg *i3c_inst)
+static NCT_I3C_RAM_CODE void nct_i3c_target_rx_fifo_flush(struct i3c_reg *i3c_inst)
 {
 	i3c_inst->DATACTRL |= BIT(NCT_I3C_DATACTRL_FLUSHFB);
 }
 
-static inline void nct_i3c_target_tx_fifo_flush(struct i3c_reg *i3c_inst)
+static NCT_I3C_RAM_CODE void nct_i3c_target_tx_fifo_flush(struct i3c_reg *i3c_inst)
 {
 	i3c_inst->DATACTRL |= BIT(NCT_I3C_DATACTRL_FLUSHTB);
 }
@@ -650,14 +698,15 @@ static int nct_i3c_xfer_read_fifo(struct i3c_reg *i3c_inst, uint8_t *buf, uint8_
 	return offset;
 }
 
-static enum nct_i3c_oper_state get_oper_state(const struct device *dev)
+static NCT_I3C_RAM_CODE enum nct_i3c_oper_state get_oper_state(const struct device *dev)
 {
 	struct nct_i3c_data *const data = dev->data;
 
 	return data->oper_state;
 }
 
-static void set_oper_state(const struct device *dev, enum nct_i3c_oper_state state)
+static NCT_I3C_RAM_CODE void set_oper_state(const struct device *dev,
+					     enum nct_i3c_oper_state state)
 {
 	struct nct_i3c_data *const data = dev->data;
 
@@ -665,8 +714,9 @@ static void set_oper_state(const struct device *dev, enum nct_i3c_oper_state sta
 }
 
 #ifdef CONFIG_I3C_NCT_DMA
-static int nct_i3c_pdma_dsct(const struct device *dev, bool is_rx,
-			     struct pdma_dsct_reg **dsct_inst)
+
+static NCT_I3C_RAM_CODE int nct_i3c_pdma_dsct(const struct device *dev, bool is_rx,
+					       struct pdma_dsct_reg **dsct_inst)
 {
 	const struct nct_i3c_config *config = dev->config;
 
@@ -721,7 +771,7 @@ static int nct_i3c_pdma_wait_completion(const struct device *dev, bool is_rx)
 	return 0;
 }
 
-static int nct_i3c_pdma_remain_count(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_pdma_remain_count(const struct device *dev, bool is_rx)
 {
 	struct pdma_reg *pdma_inst;
 	struct pdma_dsct_reg *dsct_inst = NULL;
@@ -746,7 +796,7 @@ static int nct_i3c_pdma_remain_count(const struct device *dev, bool is_rx)
 	}
 }
 
-static int nct_i3c_pdma_stop(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_pdma_stop(const struct device *dev, bool is_rx)
 {
 	struct nct_i3c_data *const data = dev->data;
 	struct pdma_dsct_reg *dsct_inst = NULL;
@@ -769,10 +819,10 @@ static int nct_i3c_pdma_stop(const struct device *dev, bool is_rx)
 
 	key = irq_lock();
 
-	/* Clear transfer done flag */
-	if (pdma_inst->PDMA_TDSTS & BIT(dsct_idx)) {
-//		pdma_inst->PDMA_TDSTS |= BIT(dsct_idx);
-	}
+	/* Do not clear TDSTS here: callers read it via nct_i3c_pdma_remain_count()
+	 * right after this to get the actual transferred length. It is cleared
+	 * in nct_i3c_pdma_start() when the channel is re-armed.
+	 */
 
 	pdma_inst->PDMA_CHCTL &= ~BIT(dsct_idx);
 
@@ -784,7 +834,7 @@ static int nct_i3c_pdma_stop(const struct device *dev, bool is_rx)
 	return 0;
 }
 
-static int nct_i3c_pdma_start(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_pdma_start(const struct device *dev, bool is_rx)
 {
 	struct nct_i3c_data *const data = dev->data;
 	struct pdma_dsct_reg *dsct_inst = NULL;
@@ -842,8 +892,9 @@ pdma_inst->PDMA_INTEN &= ~BIT(dsct_idx);
  * return  Successful return 0, or negative if error.
  *
  */
-static int nct_i3c_pdma_configure(const struct device *dev, enum i3c_config_type type, bool is_rx,
-				   uint8_t *buf, uint16_t buf_sz, bool no_ending)
+static NCT_I3C_RAM_CODE int nct_i3c_pdma_configure(const struct device *dev,
+						     enum i3c_config_type type, bool is_rx,
+						     uint8_t *buf, uint16_t buf_sz, bool no_ending)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	struct nct_i3c_data *const data = dev->data;
@@ -959,10 +1010,10 @@ static int nct_i3c_pdma_configure(const struct device *dev, enum i3c_config_type
 
 	/* Set next descriptor */
 	if (is_rx) {
-	data->dsct_sg[0].CTL = ctrl;
-	data->dsct_sg[0].SA = src_addr;
-	data->dsct_sg[0].DA = dst_addr;
-	data->dsct_sg[0].NEXT = 0x0;
+		data->dsct_sg[0].CTL = ctrl;
+		data->dsct_sg[0].SA = src_addr;
+		data->dsct_sg[0].DA = dst_addr;
+		data->dsct_sg[0].NEXT = 0x0;
 	} else {
 		data->dsct_sg[2].CTL = ctrl;
 		data->dsct_sg[2].SA = src_addr;
@@ -973,7 +1024,7 @@ static int nct_i3c_pdma_configure(const struct device *dev, enum i3c_config_type
 		if (GET_FIELD(data->dsct_sg[2].CTL, NCT_PDMA_DSCT_CTL_OPMODE) ==
 				NCT_PDMA_DSCT_CTL_OPMODE_SGM) {
 			/* Configure next descriptor. */
-			data->dsct_sg[2].NEXT = (uint32_t)&data->dsct_sg[3];
+			data->dsct_sg[2].NEXT = (uint32_t)&data->dsct_sg[3] & 0xFFFF;
 
 			/* Set basic mode for last descriptor */
 			SET_FIELD(ctrl, NCT_PDMA_DSCT_CTL_OPMODE,
@@ -994,7 +1045,7 @@ static int nct_i3c_pdma_configure(const struct device *dev, enum i3c_config_type
 	return 0;
 }
 
-static uint8_t nct_i3c_pdma_get_index(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE uint8_t nct_i3c_pdma_get_index(const struct device *dev, bool is_rx)
 {
 	struct pdma_dsct_reg *dsct_inst = NULL;
 	uint8_t dsct_idx;
@@ -1069,7 +1120,7 @@ static int nct_i3c_controller_dma_off(const struct device *dev, bool is_rx)
 	return ret;
 }
 
-static int nct_i3c_target_dma_on(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_target_dma_on(const struct device *dev, bool is_rx)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	int ret = 0;
@@ -1090,7 +1141,7 @@ static int nct_i3c_target_dma_on(const struct device *dev, bool is_rx)
 	return 0;
 }
 
-static int nct_i3c_target_dma_off(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_target_dma_off(const struct device *dev, bool is_rx)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	struct nct_i3c_data *const data = dev->data;
@@ -1372,6 +1423,7 @@ static int nct_i3c_do_one_xfer_dma(const struct device *dev, uint8_t addr,
 	return ret;
 }
 
+#if 0
 /* brief:  Handle the end of transfer (read request or write request).
  *         The ending signal might be either STOP or Sr.
  * return: -EINVAL: operation not read or write request.
@@ -1471,11 +1523,11 @@ out_pdma_end:
 
 	return ret;
 }
+#endif
 
-static int nct_i3c_pdma_stop_v2(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_pdma_stop_v2(const struct device *dev, bool is_rx)
 {
 	struct nct_i3c_data *const data = dev->data;
-	struct i3c_config_target *config_tgt = &data->config_target;
 	struct pdma_dsct_reg *dsct_inst = NULL;
 	struct pdma_reg *pdma_inst;
 	uint8_t dsct_idx;
@@ -1496,34 +1548,22 @@ static int nct_i3c_pdma_stop_v2(const struct device *dev, bool is_rx)
 
 	key = irq_lock();
 
-	/* Clear transfer done flag */
+	/* Clear transfer done flag. RX length must be sampled before this reset. */
 	if (pdma_inst->PDMA_TDSTS & BIT(dsct_idx)) {
 		pdma_inst->PDMA_TDSTS |= BIT(dsct_idx);
-
-		// update slave rcv data length before reset TDSTS
-		if (config_tgt->enable && is_rx) {
-			data->slave_rx_payload[data->rx_payload_out].size = config_tgt->max_read_len;
-		}
-	}
-	else {
-		if (config_tgt->enable && is_rx) {
-			data->slave_rx_payload[data->rx_payload_out].size = config_tgt->max_read_len - 
-				(GET_FIELD(dsct_inst->CTL, NCT_PDMA_DSCT_CTL_TXCNT) + 1);
-		}
 	}
 
 	pdma_inst->PDMA_CHCTL &= ~BIT(dsct_idx);
 
 	/* Clear DMA triggered flag */
 	data->dma_triggered &= ~BIT(dsct_idx);
-
 	irq_unlock(key);
 
 	return 0;
 }
 
 
-static int nct_i3c_target_dma_off_v2(const struct device *dev, bool is_rx)
+static NCT_I3C_RAM_CODE int nct_i3c_target_dma_off_v2(const struct device *dev, bool is_rx)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	struct nct_i3c_data *const data = dev->data;
@@ -1565,8 +1605,9 @@ static int nct_i3c_target_dma_off_v2(const struct device *dev, bool is_rx)
 	return ret;
 }
 
-static int nct_i3c_target_do_request_dma_v2(const struct device *dev, bool is_rx, uint8_t *buf,
-					  size_t buf_sz, bool no_ending)
+static NCT_I3C_RAM_CODE int nct_i3c_target_do_request_dma_v2(const struct device *dev,
+								bool is_rx, uint8_t *buf,
+								size_t buf_sz, bool no_ending)
 {
 	int ret;
 
@@ -1597,153 +1638,403 @@ err_out:
 	return ret;
 }
 
-static int nct_i3c_target_xfer_end_handle_dma_v2(const struct device *dev,
-					       enum nct_i3c_oper_state oper_state)
+static NCT_I3C_RAM_CODE int nct_i3c_target_rx_remaining(const struct device *dev)
 {
-	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
-	struct nct_i3c_data *const data = dev->data;
+	/* STOP/Sr is raised after the final byte has reached the target. */
+	return nct_i3c_pdma_remain_count(dev, true);
+}
+
+static NCT_I3C_RAM_CODE int nct_i3c_target_publish_rx(const struct device *dev,
+								       struct i3c_slave_payload *payload)
+{
+ 	struct nct_i3c_data *const data = dev->data;
 	struct i3c_config_target *config_tgt = &data->config_target;
 #ifdef CONFIG_I3C_TARGET_BUFFER_MODE
 	const struct i3c_target_callbacks *target_cb =
 		(data->target_config != NULL) ? data->target_config->callbacks : NULL;
 #endif
-	uint16_t len = 0;
-	uint16_t rx_fifo_count;
-	bool is_rx;
-	int ret = 0;
-	int i;
 
-	if (oper_state == I3C_OP_STATE_RD) {
-		is_rx = false;
-
-		len = GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT);
-		if (len == 0) {
-        	if (tx_fifo_empty_cb) {
-        		tx_fifo_empty_cb();
-        	}
+#ifdef CONFIG_I3C_TARGET_BUFFER_MODE
+	if (target_cb && target_cb->buf_write_received_cb) {
+		target_cb->buf_write_received_cb(data->target_config, payload->buf, payload->size);
+	}
+#endif
+	if ((data->slave_data.callbacks != NULL) &&
+	    (data->slave_data.callbacks->write_requested != NULL)) {
+		data->rx_payload = data->slave_data.callbacks->write_requested(data->slave_data.dev);
+		if (data->rx_payload == NULL) {
+			return -ENOMEM;
 		}
 
-		/* After STOP, the data in tx fifo is invalid. */
-		data->tx_valid = false;
+		data->rx_payload->size = config_tgt->max_read_len;
+		memcpy(data->rx_payload->buf, payload->buf, payload->size);
+		data->rx_payload->size = payload->size;
 
-		goto out_pdma_end;
-	} else if (oper_state == I3C_OP_STATE_WR) {
-		is_rx = true;
-
-		/* Wait until no data insert into rx fifo */
-#define RX_FIFO_EMPTY_TIMEOUT 100
-		len = GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_RXCOUNT);
-		for (i = 0; i < RX_FIFO_EMPTY_TIMEOUT; i++) {
-			/* For 12.5MHz, [data] + [T] = 0.75us */
-			k_busy_wait(10);
-			rx_fifo_count =
-				GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_RXCOUNT);
-
-			if (len == rx_fifo_count) {
-				break;
-			} else {
-				len = rx_fifo_count;
-			}
+		if (data->slave_data.callbacks->write_done != NULL) {
+			data->slave_data.callbacks->write_done(data->slave_data.dev);
 		}
+	}
 
-		update_i3c_slave_rx_payload(dev);		
+	return 0;
+}
 
-		struct i3c_slave_payload *new_payload = alloc_i3c_slave_rx_payload(dev);
-		new_payload->size = config_tgt->max_read_len;
+typedef struct {
+	uint8_t hdr;
+	uint8_t eid_dst;
+	uint8_t eid_src;
 
-		is_rx = true;
-		bool no_ending = false;
+	union {
+/*
+		struct {
+			uint8_t som : 1;
+			uint8_t eom : 1;
+			uint8_t seq : 2;
+			uint8_t TO	: 1;
+			uint8_t tag : 3;
+		} bits;
+*/		 
+		uint8_t flags_byte;
+	} flags;
+} MCTP_HEADER_T;
 
-		ret = nct_i3c_target_do_request_dma_v2(dev, is_rx, new_payload->buf, config_tgt->max_read_len, no_ending);
-		if (ret < 0) {
-			LOG_ERR("do xfer fail");
-		}
+static I3C_RX_BOUNDARY_UNUSED bool nct_i3c_target_validate_trailing_pec(
+	const struct device *dev, uint8_t *buffer, uint16_t len);
 
-		// process the received data
-		len = data->slave_rx_payload[data->rx_payload_out].size;
+static I3C_RX_BOUNDARY_UNUSED uint16_t nct_i3c_target_find_mctp_packet_end(
+	const struct device *dev, uint8_t *buffer, uint16_t buf_len)
+{
+	uint16_t next_header;
 
-	#ifdef CONFIG_I3C_TARGET_BUFFER_MODE
-		if (target_cb && target_cb->buf_write_received_cb) {
-			target_cb->buf_write_received_cb(data->target_config, 
-				data->slave_rx_payload[data->rx_payload_out].buf, len);
-		}
-	#endif
-		// For V2.6 mctp
-		if (data->slave_data.callbacks != NULL) {
-			if (data->slave_data.callbacks->write_requested != NULL) {
-				data->rx_payload = data->slave_data.callbacks->write_requested(
-					data->slave_data.dev);
-
-				data->rx_payload->size = config_tgt->max_read_len;
-			}
-
-			memcpy(data->rx_payload->buf, data->slave_rx_payload[data->rx_payload_out].buf, len);
-			data->rx_payload->size = len;
-
-			if (data->slave_data.callbacks->write_done != NULL) {
-				data->slave_data.callbacks->write_done(data->slave_data.dev);
-			}
-		}
-
-		data->rx_payload_out = (data->rx_payload_out + 1) % ARRAY_SIZE(data->pdma_rx_buf);
+	// the minimal valid MCTP packet is 6 bytes: 4-byte header, 1-byte payload, 1-byte PEC
+	if (buf_len < 6) {
 		return 0;
-	} else if (oper_state == I3C_OP_STATE_CCC) {
-		is_rx = true;
+	}
 
-		/* Wait until no data insert into rx fifo */
-#define RX_FIFO_EMPTY_TIMEOUT 100
-		len = GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_RXCOUNT);
-		for (i = 0; i < RX_FIFO_EMPTY_TIMEOUT; i++) {
-			/* For 12.5MHz, [data] + [T] = 0.75us */
-			k_busy_wait(10);
-			rx_fifo_count =
-				GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_RXCOUNT);
-
-			if (len == rx_fifo_count) {
-				break;
-			} else {
-				len = rx_fifo_count;
+	// test H0 ....PEC, H1
+	for (next_header = 6; next_header < buf_len; next_header++) {
+ 		if (buffer[next_header] == 1) {
+			if (nct_i3c_target_validate_trailing_pec(dev, buffer, next_header)) {
+				return next_header - 1;
 			}
-		}	
+		}
+	}
 
-		update_i3c_slave_rx_payload(dev);
+	// test H0 ....PEC
+	if (nct_i3c_target_validate_trailing_pec(dev, buffer, buf_len)) {
+		return next_header - 1;
+	}
 
-		struct i3c_slave_payload *new_payload = alloc_i3c_slave_rx_payload(dev);
-		new_payload->size = config_tgt->max_read_len;
+	return 0;
+}
 
-		is_rx = true;
-		bool no_ending = false;
+/* Validate that buffer[len-1] is the correct trailing PEC for buffer[0..len-2].
+ * Used for the remainder at the end of an RX boundary, which has no following
+ * header to derive its extent from, so it must be checked against its own end.
+ */
+static I3C_RX_BOUNDARY_UNUSED bool nct_i3c_target_validate_trailing_pec(
+	const struct device *dev, uint8_t *buffer, uint16_t len)
+{
+	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
+	uint8_t dynamic_addr = GET_FIELD(i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DADDR) << 1;
+	uint8_t pec;
 
-		ret = nct_i3c_target_do_request_dma_v2(dev, is_rx, new_payload->buf, config_tgt->max_read_len, no_ending);
-		if (ret < 0) {
-			LOG_ERR("do xfer fail");
+	if (len < 6) {
+		return false;
+	}
+
+	pec = crc8(&dynamic_addr, 1, 0x07, 0x00, false);
+	pec = crc8(buffer, len - 1, 0x07, pec, false);
+
+	return pec == buffer[len - 1];
+}
+
+/*
+ * If the previous ISR reacted a few bus clocks late, PDMA may have kept writing
+ * the next message's leading bytes into the tail of the still-armed old buffer
+ * before software swapped it out, so buffer[0] here is not guaranteed to be a
+ * real MCTP header. Probe leading offsets until a candidate has either a
+ * PEC-valid next-header boundary or a PEC-valid final-packet boundary; bytes
+ * before that offset are stray and must be dropped instead of corrupting the
+ * first packet's parse.
+ */
+static I3C_RX_BOUNDARY_UNUSED bool nct_i3c_target_find_frame_start(
+	const struct device *dev, uint8_t *buffer, uint16_t buf_len, uint16_t *frame_start,
+	uint16_t *packet_end)
+{
+	uint16_t start;
+
+	*packet_end = 0;
+
+	// minimal valid MCTP packet is 6 bytes: 4-byte header, 1-byte payload, 1-byte PEC
+	if (buf_len < 6) {
+		return false;
+	}
+
+	/* Scan the whole snapshot: there is no way to bound how many bytes may
+	 * have leaked, so an arbitrary cutoff can silently miss the real header.
+	 */
+	for (start = *frame_start; start <= (buf_len - 6); start++) {
+		if (buffer[start] != 1) {
+			continue;
 		}
 
-		// process the received data
-		len = data->slave_rx_payload[data->rx_payload_out].size;
+		*packet_end = nct_i3c_target_find_mctp_packet_end(dev, &buffer[start],
+										  buf_len - start);
 
-		// call CCC handler
-		uint8_t buf[10];
-		uint8_t rcv_cnt;
+		// find complete mctp packet, update frame_start and return true
+		if (*packet_end != 0) {
+			*frame_start = start;
+			return true;
+		}
+	}
 
-		rcv_cnt = data->slave_rx_payload[data->rx_payload_out].size;
-		memcpy(buf, data->slave_rx_payload[data->rx_payload_out].buf, rcv_cnt);
+	return false;
+}
 
-		if (buf[0] == I3C_CCC_RSTACT(true)) {
-			LOG_DBG("CCC RSTACT received");
+static int nct_i3c_target_publish_rx_basic(const struct device *dev, uint8_t *buffer,
+						     uint16_t len)
+{
+	struct i3c_slave_payload payload = {
+		.buf = buffer,
+		.size = len,
+	};
+
+	return nct_i3c_target_publish_rx(dev, &payload);
+}
+
+static I3C_RX_BOUNDARY_UNUSED int nct_i3c_target_publish_rx_mctp_header_pec(
+	const struct device *dev, uint8_t *buffer, uint16_t len)
+{
+	uint16_t scanned;
+	uint16_t pkt_end;
+	int ret;
+
+// LOG_HEXDUMP_ERR(buffer, len, "RequestFirmwareData response");
+
+	scanned = 0;
+	while ((scanned + 6) <= len) {
+		if (!nct_i3c_target_find_frame_start(dev, buffer, len, &scanned, &pkt_end)) {
+			// no valid mctp packet found at the current scan position
+			scanned++;
+			continue;
 		}
 
-		data->rx_payload_out = (data->rx_payload_out + 1) % ARRAY_SIZE(data->pdma_rx_buf);
-		return 0;
+		// Found a valid MCTP packet from scanned to pkt_end. Publish it.
+		struct i3c_slave_payload payload = {
+			.buf = &buffer[scanned],
+			.size = pkt_end + 1,
+		};
+
+		ret = nct_i3c_target_publish_rx(dev, &payload);
+		if (ret != 0) {
+			return ret;
+		}
+
+//LOG_ERR("I3C RX publish %u bytes, scanned=%u, pkt_end=%u", pkt_end + 1, scanned, pkt_end);
+		scanned = pkt_end + 1;
+	}
+
+	return 0;
+}
+
+static I3C_RX_BOUNDARY_UNUSED int nct_i3c_target_publish_rx_mctp_header_format(
+	const struct device *dev, uint8_t *buffer, uint16_t len)
+{
+	/* Message type and command formats must define the packet extent. */
+	return nct_i3c_target_publish_rx_basic(dev, buffer, len);
+}
+
+static int nct_i3c_target_publish_rx_by_strategy(const struct device *dev, uint8_t *buffer,
+								    uint16_t len)
+{
+#if I3C_RX_BOUNDARY_STRATEGY == I3C_RX_BOUNDARY_BASIC
+	return nct_i3c_target_publish_rx_basic(dev, buffer, len);
+#elif I3C_RX_BOUNDARY_STRATEGY == I3C_RX_BOUNDARY_MCTP_HEADER_PEC
+	return nct_i3c_target_publish_rx_mctp_header_pec(dev, buffer, len);
+#endif
+}
+
+static void nct_i3c_target_publish_rx_work(struct k_work *work)
+{
+	struct nct_i3c_data *data = CONTAINER_OF(work, struct nct_i3c_data, rx_publish_work);
+	const struct device *dev = data->dev;
+
+	while (true) {
+		uint8_t queue_slot;
+		uint16_t len;
+		uint8_t buffer[MAX_I3C_PAYLOAD_SIZE];
+		k_spinlock_key_t key = k_spin_lock(&data->rx_publish_lock);
+
+		if (data->rx_publish_count == 0) {
+			data->rx_publish_scheduled = false;
+			k_spin_unlock(&data->rx_publish_lock, key);
+			return;
+		}
+
+		queue_slot = data->rx_publish_out;
+		len = data->rx_publish_len[queue_slot];
+		memcpy(buffer, data->rx_publish_buf[queue_slot], len);
+		data->rx_publish_out =
+			(data->rx_publish_out + 1) % I3C_NCT_RX_PUBLISH_QUEUE_DEPTH;
+		data->rx_publish_count--;
+		k_spin_unlock(&data->rx_publish_lock, key);
+
+#ifdef I3C_GPIO_DBG
+gpio_pin_set(gpio3_dev, SLV_MARK_PIN, 1);
+#endif
+		(void)nct_i3c_target_publish_rx_by_strategy(dev, buffer, len);
+	}
+}
+
+static NCT_I3C_RAM_CODE void nct_i3c_target_queue_rx_publish(const struct device *dev,
+									      uint8_t *buffer, uint16_t len)
+{
+	struct nct_i3c_data *data = dev->data;
+	bool submit_work = false;
+	bool drop_new_snapshot = false;
+	k_spinlock_key_t key = k_spin_lock(&data->rx_publish_lock);
+
+	if (data->rx_publish_count == I3C_NCT_RX_PUBLISH_QUEUE_DEPTH) {
+		/* Preserve pending packets in FIFO order; discard the newly received snapshot. */
+		drop_new_snapshot = true;
 	} else {
-		LOG_ERR("oper_state error :%d", oper_state);
+		memcpy(data->rx_publish_buf[data->rx_publish_in], buffer, len);
+		data->rx_publish_len[data->rx_publish_in] = len;
+		data->rx_publish_in = (data->rx_publish_in + 1) % I3C_NCT_RX_PUBLISH_QUEUE_DEPTH;
+		data->rx_publish_count++;
+		if (!data->rx_publish_scheduled) {
+			data->rx_publish_scheduled = true;
+			submit_work = true;
+		}
+	}
+	k_spin_unlock(&data->rx_publish_lock, key);
+
+	if (drop_new_snapshot) {
+		LOG_WRN("I3C RX publish queue full, dropping new %u-byte snapshot", len);
+		return;
+	}
+
+	if (submit_work) {
+#ifdef I3C_GPIO_DBG
+gpio_pin_set(gpio3_dev, SLV_MARK_PIN, 0);
+#endif
+		k_work_submit(&data->rx_publish_work);
+	}
+}
+
+/* Complete the currently armed RX descriptor exactly once at a bus boundary. */
+static NCT_I3C_RAM_CODE int nct_i3c_target_complete_rx(const struct device *dev, bool publish)
+{
+	struct nct_i3c_data *const data = dev->data;
+	struct i3c_config_target *config_tgt = &data->config_target;
+	struct i3c_slave_payload *next;
+	struct pdma_dsct_reg *rx_dsct = NULL;
+	struct pdma_reg *pdma_inst;
+	uint8_t rx_dsct_idx;
+	int remaining;
+	int ret;
+
+	rx_dsct_idx = nct_i3c_pdma_dsct(dev, true, &rx_dsct);
+	if (rx_dsct == NULL) {
 		return -EINVAL;
 	}
 
-out_pdma_end:
-	nct_i3c_target_dma_off(dev, is_rx);
+	pdma_inst = (struct pdma_reg *)NCT_PDMA_BASE((uint32_t)rx_dsct);
+	if (pdma_inst == NULL) {
+		return -EINVAL;
+	}
 
-	return ret;
+	/*
+	 * The top-level RX channel starts in SGM mode and only contains a link to
+	 * dsct_sg[0]. If it remains SGM at STOP/Sr, no I3C RX request loaded the
+	 * data descriptor; do not turn that header's TXCNT=0 into len=255.
+	 */
+	if ((!IS_BIT_SET(pdma_inst->PDMA_TDSTS, rx_dsct_idx)) &&
+	    (GET_FIELD(rx_dsct->CTL, NCT_PDMA_DSCT_CTL_OPMODE) ==
+	     NCT_PDMA_DSCT_CTL_OPMODE_SGM)) {
+		LOG_DBG("I3C RX boundary without PDMA progress: cur_sg=%08x", 
+			pdma_inst->PDMA_CURSCAT[rx_dsct_idx]);
+		return 0;
+	}
+
+	remaining = nct_i3c_target_rx_remaining(dev);
+	LOG_DBG("I3C RX boundary: remain=%d live_ctl=%08x live_da=%08x cur_sg=%08x idx=%u",
+		remaining, rx_dsct->CTL, rx_dsct->DA,
+		pdma_inst->PDMA_CURSCAT[rx_dsct_idx], rx_dsct_idx);
+
+	if (remaining < 0) {
+		// for EINVAL
+		return remaining;
+	}
+
+	if (remaining == config_tgt->max_read_len) {
+		// not yet started
+		return 0;
+	}
+
+	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
+	if ((remaining == 0) && 
+		((IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_RXPEND)) ||
+		 (GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_RXCOUNT)))) {
+#ifdef I3C_GPIO_DBG
+		// gpio_pin_set_raw(gpio3_dev, SLV_MARK_PIN, 0);
+#endif
+		LOG_WRN("overrun will be detected !!!");
+	}
+
+	/* Snapshot and re-arm in the ISR; packet boundary processing runs in workqueue context. */	
+	uint16_t rcv_len = config_tgt->max_read_len - remaining;
+	uint8_t rcv_buf[MAX_I3C_PAYLOAD_SIZE];
+
+	memcpy(rcv_buf, data->slave_rx_payload[data->rx_payload_in].buf, rcv_len);
+
+	data->rx_payload_in = (data->rx_payload_in + 1) % ARRAY_SIZE(data->pdma_rx_buf);
+	next = &data->slave_rx_payload[data->rx_payload_in];
+	data->rx_payload_curr = next;
+	next->size = config_tgt->max_read_len;
+
+	ret = nct_i3c_target_do_request_dma_v2(dev, true, next->buf,
+					       config_tgt->max_read_len, false);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (!publish) {
+		return 1;
+	}
+
+	nct_i3c_target_queue_rx_publish(dev, rcv_buf, rcv_len);
+	return 1;
+}
+
+static NCT_I3C_RAM_CODE void nct_i3c_target_complete_tx(const struct device *dev)
+{
+	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
+	struct nct_i3c_data *const data = dev->data;
+	uint16_t pending = GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT);
+
+	if (!data->tx_valid) {
+		return;
+	}
+
+	/*
+	 * PDMA "transfer done" only means the response reached the TX FIFO, so the
+	 * FIFO must also be empty before the armed response counts as delivered.
+	 * Any earlier bus boundary (the IBI itself, or the Sr in front of the read)
+	 * must leave the TX path armed, otherwise the controller underruns mid-read.
+	 */
+	int remain = nct_i3c_pdma_remain_count(dev, false);
+
+	if ((pending != 0U) || (remain != 0)) {
+		return;
+	}
+
+	nct_i3c_target_dma_off(dev, false);
+	data->tx_valid = false;
+
+	if (tx_fifo_empty_cb != NULL) {
+		tx_fifo_empty_cb();
+	}
 }
 #else
 static bool nct_i3c_target_has_error(struct i3c_reg *i3c_inst)
@@ -2979,79 +3270,41 @@ static int nct_i3c_target_ibi_raise(const struct device *dev, struct i3c_ibi *re
 }
 #endif /* CONFIG_I3C_USE_IBI */
 
-static inline int nct_i3c_target_MATCHED_handler(const struct device *dev)
+static NCT_I3C_RAM_CODE void nct_i3c_target_STOP_handler(const struct device *dev);
+
+static NCT_I3C_RAM_CODE int nct_i3c_target_MATCHED_handler(const struct device *dev)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
+	enum nct_i3c_oper_state oper_state = get_oper_state(dev);
+	int ret = 0;
+
+#ifdef CONFIG_I3C_NCT_DMA
+	/*
+	 * A short SDR write can raise STOP/Sr only a few bus clocks after MATCHED,
+	 * faster than this ISR can exit and be re-entered. Arm the boundary and spin
+	 * for STOP here so the RX descriptor is closed/re-armed before the next
+	 * message's first byte can land on it, instead of racing a second interrupt.
+	 */
+	if ((oper_state != I3C_OP_STATE_IBI) &&
+	    IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_STREQWR)) {
+		i3c_inst->CONFIG |= BIT(NCT_I3C_CONFIG_MATCHSS);
+		i3c_inst->INTCLR = BIT(NCT_I3C_INTCLR_MATCHED);
+
+#ifdef BUSY_WAIT_FOR_STOP		
+		if (WAIT_FOR(IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_STOP),
+			     I3C_SDR_WR_STOP_WAIT_US, NULL)) {
+			ret = 1;
+		}
+#endif			
+
+		return ret;
+	}
+#else
 	struct nct_i3c_data *data = dev->data;
 	const struct i3c_target_callbacks *target_cb =
 		(data->target_config != NULL) ? data->target_config->callbacks : NULL;
-	enum nct_i3c_oper_state oper_state = get_oper_state(dev);
-	int ret = 0;
 	uint32_t int_status = i3c_inst->STATUS;
 
-	// Check TDSTS to decide RD or WR
-	struct pdma_dsct_reg *dsct_inst = NULL;
-//	struct pdma_reg *pdma_inst;
-	uint8_t dsct_idx;
-
-#ifdef CONFIG_I3C_NCT_DMA
-	if (oper_state != I3C_OP_STATE_IBI) {
-		/* wait until STREQWR == 1 or STREQRD == 1*/
-		while (1) {
-			if (int_status & 0x18) {
-				break;
-			}
-
-			if ((int_status & 0x1) == 0) {
-
-				// check slave's TX PDMA => is_rx = false
-				dsct_idx = nct_i3c_pdma_dsct(dev, false, &dsct_inst);
-				if (data->dma_triggered & BIT(dsct_idx)) {
-					set_oper_state(dev, I3C_OP_STATE_RD);
-				}
-				else {
-					set_oper_state(dev, I3C_OP_STATE_WR);
-
-					if ((target_cb != NULL) && (target_cb->write_requested_cb != NULL)) {
-						target_cb->write_requested_cb(data->target_config);
-					}
-				}
-				ret = 1;
-				break;
-			}
-
-			int_status = i3c_inst->STATUS;
-		};
-
-		/* The current bus request is an SDR mode read or write */
-		if (IS_BIT_SET(int_status, NCT_I3C_STATUS_STREQRD)) {
-			/* SDR read request */
-			set_oper_state(dev, I3C_OP_STATE_RD);
-			ret = 1;
-
-			/*
-			 * It will be too late to enable pdma here, use target_tx_write() to
-			 * write tx data into fifo before controller send read request.
-			 */
-#if CONFIG_I3C_TARGET_BUFFER_MODE
-			/* Emit read request callback */
-			if ((target_cb != NULL) && (target_cb->buf_read_requested_cb != NULL)) {
-				target_cb->buf_read_requested_cb(data->target_config, NULL, NULL,
-								 NULL);
-			}
-#endif
-		} else if (IS_BIT_SET(int_status, NCT_I3C_STATUS_STREQWR)) {
-			/* SDR write request */
-			set_oper_state(dev, I3C_OP_STATE_WR);
-			ret = 1;
-
-			/* Emit write request callback */
-			if ((target_cb != NULL) && (target_cb->write_requested_cb != NULL)) {
-				target_cb->write_requested_cb(data->target_config);
-			}
-		}
-	}
-#else
 	if (oper_state != I3C_OP_STATE_IBI) {
 		if (IS_BIT_SET(int_status, NCT_I3C_STATUS_STREQRD)) {
 			/* SDR read request */
@@ -3111,67 +3364,57 @@ static inline int nct_i3c_target_MATCHED_handler(const struct device *dev)
 #endif
 
 	/*
-	 * If CONFIG.MATCHSS=1, MATCHED bit must remain 1 to detect next start
-	 * or stop.
-	 *
-	 * Clear the status bit in STOP or START handler.
+	 * Change MATCHSS = 1b and keep MATCHED = 1b to detect the next start or stop.
 	 */
-	if (IS_BIT_SET(i3c_inst->CONFIG, NCT_I3C_CONFIG_MATCHSS)) {
-		i3c_inst->INTCLR = BIT(NCT_I3C_INTCLR_MATCHED);
-	} else {
-		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_MATCHED);
-	}
+	i3c_inst->CONFIG |= BIT(NCT_I3C_CONFIG_MATCHSS);
+	i3c_inst->INTCLR = BIT(NCT_I3C_INTCLR_MATCHED);
 
 	return ret;
 }
 
-static inline void nct_i3c_target_STOP_handler(const struct device *dev)
+static NCT_I3C_RAM_CODE void nct_i3c_target_buffer_handler(const struct device *dev)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	struct nct_i3c_data *data = dev->data;
-	const struct i3c_target_callbacks *target_cb =
-		(data->target_config != NULL) ? data->target_config->callbacks : NULL;
 	enum nct_i3c_oper_state oper_state = get_oper_state(dev);
 
-if ((oper_state != I3C_OP_STATE_CCC) && (oper_state != I3C_OP_STATE_CHANDLED)) {
-	/* NACK to master while processing buffer */
-	i3c_inst->CONFIG |= BIT(NCT_I3C_CONFIG_NACK);
-}
-
-
-	if (IS_BIT_SET(i3c_inst->INTMASKED, NCT_I3C_INTMASKED_START)) {
-		/* Clear the status bit */
-		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_START);
-	}
-
 	/*
-	 * The end of xfer is a STOP.
 	 * For write request: check whether rx fifo count is 0.
 	 * For read request: disable the pdma operation.
 	 */
+
 #ifdef CONFIG_I3C_NCT_DMA
-	if ((oper_state == I3C_OP_STATE_WR) || (oper_state == I3C_OP_STATE_RD)) {
-		if (nct_i3c_target_xfer_end_handle_dma_v2(dev, oper_state) != 0) {
-			LOG_ERR("xfer end handle failed after stop, op state=%d", oper_state);
-		}
+	/*
+	 * EVENT is serviced last in the ISR, so a coalesced IBI + read still reports
+	 * I3C_OP_STATE_IBI at the read's boundary. Only RX sampling must be skipped
+	 * here: the IBI/MDB carries no target-write payload, and sampling it would
+	 * attribute bytes of the following write to this boundary and split that
+	 * message. TX completion stays gated by the drain check in complete_tx().
+	 */
+	if (IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_STREQWR)) {
+		set_oper_state(dev, I3C_OP_STATE_WR);
+	}
 
-		i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_NACK);
-	} else if (oper_state == I3C_OP_STATE_IBI) {
-		if (GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT) == 0) {
-			nct_i3c_target_dma_off(dev, false);
-		}
+	if ((oper_state != I3C_OP_STATE_IBI) && (oper_state != I3C_OP_STATE_WR)) {
+		int rx_ret = nct_i3c_target_complete_rx(dev, oper_state != I3C_OP_STATE_CCC);
 
-		i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_NACK);
+		if (rx_ret != 0) {
+			if (rx_ret < 0) {
+				LOG_ERR("I3C RX completion failed: %d", rx_ret);
+			}
+		}
+	}
+
+	if (data->tx_valid) {
+		nct_i3c_target_complete_tx(dev);
 	} else if (oper_state == I3C_OP_STATE_CCC) {
-		if (nct_i3c_target_xfer_end_handle_dma_v2(dev, oper_state) != 0) {
-			LOG_ERR("xfer end handle failed after stop, op state=%d", oper_state);
-		}
-
 		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_CCC);
 		i3c_inst->INTSET = BIT(NCT_I3C_INTSET_CCC);
 	} else {
 		/* Check RXPEND */
 		if (IS_BIT_SET(i3c_inst->STATUS, NCT_I3C_STATUS_RXPEND) && !(data->tx_valid)) {
+			LOG_WRN("Unexpected RXPEND fallback: flushing RX FIFO (state=%d status=%08x datactrl=%08x config=%08x)",
+				oper_state, i3c_inst->STATUS, i3c_inst->DATACTRL, i3c_inst->CONFIG);
 			nct_i3c_target_rx_fifo_flush(i3c_inst);
 		}
 	}
@@ -3182,9 +3425,25 @@ if ((oper_state != I3C_OP_STATE_CCC) && (oper_state != I3C_OP_STATE_CHANDLED)) {
 		}
 	}
 #endif
+}
+
+static NCT_I3C_RAM_CODE void nct_i3c_target_STOP_handler(const struct device *dev)
+{
+	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
+	struct nct_i3c_data *data = dev->data;
+	const struct i3c_target_callbacks *target_cb =
+		(data->target_config != NULL) ? data->target_config->callbacks : NULL;
 
 	/* Clear the status bit */
 	i3c_inst->STATUS = BIT(NCT_I3C_STATUS_STOP);
+
+	i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_MATCHSS);
+
+	/* Drop the match MATCHSS just re-latched, or re-arming below re-enters at once. */
+	i3c_inst->STATUS = BIT(NCT_I3C_STATUS_MATCHED);
+
+	nct_i3c_target_buffer_handler(dev);
+	i3c_inst->INTSET = BIT(NCT_I3C_INTSET_MATCHED);
 
 	/* Notify upper layer a STOP condition received */
 	if ((target_cb != NULL) && (target_cb->stop_cb != NULL)) {
@@ -3194,125 +3453,232 @@ if ((oper_state != I3C_OP_STATE_CCC) && (oper_state != I3C_OP_STATE_CHANDLED)) {
 	set_oper_state(dev, I3C_OP_STATE_IDLE);
 }
 
-static inline void nct_i3c_target_START_handler(const struct device *dev)
+static NCT_I3C_RAM_CODE void nct_i3c_target_START_handler(const struct device *dev)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
-	enum nct_i3c_oper_state oper_state = get_oper_state(dev); /* Entry operation state */
-
-	/* The end of xfer is a Sr */
-	if ((oper_state == I3C_OP_STATE_WR) || (oper_state == I3C_OP_STATE_RD)) {
-		/* Use entry operation state to handle the xfer end */
-#ifdef CONFIG_I3C_NCT_DMA
-		if (nct_i3c_target_xfer_end_handle_dma(dev, oper_state) == -ETIMEDOUT) {
-			LOG_ERR("xfer end handle failed after start, op state=%d", oper_state);
-
-			set_oper_state(dev, I3C_OP_STATE_IDLE);
-		}
-#else
-		if (nct_i3c_target_xfer_end_handle(dev, oper_state) != 0) {
-			LOG_ERR("xfer end handle failed after stop, op state=%d", oper_state);
-		}
-#endif
-	}
 
 	/* Clear the status bit */
 	i3c_inst->STATUS = BIT(NCT_I3C_STATUS_START);
+
+#ifdef CONFIG_I3C_NCT_DMA
+	if (IS_BIT_SET(i3c_inst->CONFIG, NCT_I3C_CONFIG_MATCHSS) == 0) {
+		/* This is a new bus transaction, not a boundary of our matched target transfer. */
+		return;
+	}
+
+	i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_MATCHSS);
+
+	/* Drop the match MATCHSS just re-latched, or re-arming below re-enters at once. */
+	i3c_inst->STATUS = BIT(NCT_I3C_STATUS_MATCHED);
+
+	/* TXCNT and tx_valid determine whether the completed transfer was RX or TX. */
+	nct_i3c_target_buffer_handler(dev);
+
+	i3c_inst->INTSET = BIT(NCT_I3C_INTSET_MATCHED);
+	set_oper_state(dev, I3C_OP_STATE_IDLE);
+#else
+	struct nct_i3c_data *data = dev->data;
+	enum nct_i3c_oper_state oper_state = get_oper_state(dev);
+
+	if ((oper_state != I3C_OP_STATE_WR && oper_state != I3C_OP_STATE_RD) ||
+	    IS_BIT_SET(i3c_inst->CONFIG, NCT_I3C_CONFIG_MATCHSS) == 0) {
+		/* A new transaction must not complete a freshly armed RX DMA transfer. */
+		return;
+	}
+
+	/* A repeated START terminates the active transfer. */
+	i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_MATCHSS);
+	i3c_inst->STATUS = BIT(NCT_I3C_STATUS_MATCHED);
+	nct_i3c_target_buffer_handler(dev);
+	i3c_inst->INTSET = BIT(NCT_I3C_INTSET_MATCHED);
+	set_oper_state(dev, I3C_OP_STATE_IDLE);
+#endif
 }
 
-static void nct_i3c_target_isr(const struct device *dev)
+static NCT_I3C_RAM_CODE void nct_i3c_target_isr(const struct device *dev)
 {
 	struct nct_i3c_data *data = dev->data;
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	uint32_t intmask = i3c_inst->INTMASKED;
 
+#ifdef I3C_GPIO_DBG
+	gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 0); /* Low, Enter Target ISR */
+#endif	
 #ifndef CONFIG_I3C_NCT_DMA
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_RXPEND)) {
-			/* Flush rx and tx FIFO */
-			nct_i3c_target_rx_fifo_flush(i3c_inst);
-			nct_i3c_target_tx_fifo_flush(i3c_inst);
-		}
+	enum nct_i3c_oper_state oper_state = get_oper_state(dev);
+
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_RXPEND)) {
+		/* Flush rx and tx FIFO */
+		nct_i3c_target_rx_fifo_flush(i3c_inst);
+		nct_i3c_target_tx_fifo_flush(i3c_inst);
+	}
 #endif
 
-		/* Check error or warning has occurred */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_ERRWARN)) {
+	/* Check error or warning has occurred */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_ERRWARN)) {
 		uint32_t errwarn = i3c_inst->ERRWARN;
+
+#ifdef CONFIG_I3C_NCT_DMA		
+		struct pdma_dsct_reg *tx_dsct = NULL;
+		(void)nct_i3c_pdma_dsct(dev, false, &tx_dsct);
+		struct pdma_reg *pdma_inst = (tx_dsct != NULL) ?
+			(struct pdma_reg *)NCT_PDMA_BASE((uint32_t)tx_dsct) : NULL;
+#endif			
+
 		if (errwarn == 0x100) {
 			// read timeout happened
 			LOG_WRN("ERRWARN %x", errwarn);
-			}
-			else {
-			LOG_ERR("ERRWARN %x", errwarn);
-			}
+		}
+		else {
+#ifdef CONFIG_I3C_NCT_DMA					
+			LOG_ERR("ERRWARN %x tx_valid=%d dma=%08x txcount=%u chctl=%08x tdsts=%08x tx_ctl=%08x tx_sa=%08x tx_da=%08x",
+				errwarn, data->tx_valid, i3c_inst->DMACTRL,
+				GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT),
+				pdma_inst ? pdma_inst->PDMA_CHCTL : 0U,
+				pdma_inst ? pdma_inst->PDMA_TDSTS : 0U,
+				tx_dsct ? tx_dsct->CTL : 0U,
+				tx_dsct ? tx_dsct->SA : 0U,
+				tx_dsct ? tx_dsct->DA : 0U);
+#else
+			LOG_ERR("ERRWARN %x tx_valid=%d dma=%08x txcount=%u",
+				errwarn, data->tx_valid, i3c_inst->DMACTRL,
+				GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT));				
+#endif
+		}
 		i3c_inst->ERRWARN = errwarn;
+	}
+
+	/* Check dynamic address changed */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_DACHG)) {
+		uint8_t dynamic_addr = GET_FIELD(i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DADDR);
+		bool dynamic_addr_valid =
+			IS_BIT_SET(i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DAVALID) &&
+			(dynamic_addr != 0U);
+
+		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_DACHG);
+		if (dynamic_addr_valid) {
+			struct i3c_config_target *config_target = &data->config_target;
+
+			config_target->dynamic_addr = dynamic_addr;
+		} else {
+			data->config_target.dynamic_addr = 0U;
 		}
 
-		/* Check dynamic address changed */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_DACHG)) {
-			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_DACHG);
-			if (IS_BIT_SET(i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DAVALID)) {
-			struct i3c_config_target *config_target = &data->config_target;
-			struct i3c_target_config *target_config = data->target_config;
+		intmask &= ~BIT(NCT_I3C_INTMASKED_DACHG);
+		if (!intmask) { 
+#ifdef I3C_GPIO_DBG
+			gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 1); /* High, Exit Target ISR */
+#endif
+			return; 
+		}
+	}
 
-				if (target_config != NULL) {
-					config_target->dynamic_addr = GET_FIELD(
-						i3c_inst->DYNADDR, NCT_I3C_DYNADDR_DADDR);
-				}
-			}
+	/*
+	 * A coalesced STOP+START must be resolved as "STOP of the matched transfer,
+	 * then START of a new one". Otherwise the new START is taken for a repeated
+	 * START of the old transfer and tears down the freshly armed TX/RX DMA in
+	 * the middle of the new transfer, which the controller sees as an underrun.
+	 */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_STOP) &&
+	    IS_BIT_SET(intmask, NCT_I3C_INTMASKED_START)) {
+#ifdef CONFIG_I3C_NCT_DMA
+		bool matched_active = IS_BIT_SET(i3c_inst->CONFIG, NCT_I3C_CONFIG_MATCHSS);
+#else
+		bool matched_active = (oper_state == I3C_OP_STATE_WR) ||
+				      (oper_state == I3C_OP_STATE_RD);
+#endif
 
-		intmask &= ~NCT_I3C_INTMASKED_DACHG;
-		if (!intmask) { return; }
+		if (matched_active) {
+			nct_i3c_target_STOP_handler(dev);
+
+			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_START);
+
+			intmask &= ~(BIT(NCT_I3C_INTMASKED_STOP) |
+				     BIT(NCT_I3C_INTMASKED_START));
+		}
 	}
 
 	/* Check START or Sr detected */
 	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_START)) {
 		nct_i3c_target_START_handler(dev);
 
-		intmask &= ~NCT_I3C_INTMASKED_START;
-		if (!intmask) { return; }
+		intmask &= ~BIT(NCT_I3C_INTMASKED_START);
+		if (!intmask) { 
+#ifdef I3C_GPIO_DBG
+			gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 1); /* High, Exit Target ISR */
+#endif
+			return; 
+		}
 	}
 
 	/* CCC handled (handled by IP) */
 	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_CHANDLED)) {
 		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_CHANDLED);
 		set_oper_state(dev, I3C_OP_STATE_CHANDLED);
-		intmask &= ~NCT_I3C_INTMASKED_CHANDLED;
-		if (!intmask) { return; }
+		intmask &= ~BIT(NCT_I3C_INTMASKED_CHANDLED);
+		if (!intmask) { 
+#ifdef I3C_GPIO_DBG
+			gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 1); /* High, Exit Target ISR */
+#endif
+			return; 
 		}
+	}
 
-		/* CCC 'not' automatically handled was received */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_CCC)) {
-			set_oper_state(dev, I3C_OP_STATE_CCC);
-			i3c_inst->INTCLR = BIT(NCT_I3C_INTCLR_CCC); /* W1C */
+	/* CCC 'not' automatically handled was received */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_CCC)) {
+		set_oper_state(dev, I3C_OP_STATE_CCC);
+		i3c_inst->INTCLR = BIT(NCT_I3C_INTCLR_CCC); /* W1C */
 
-		intmask &= ~NCT_I3C_INTMASKED_CCC;
-		if (!intmask) { return; }
+		intmask &= ~BIT(NCT_I3C_INTMASKED_CCC);
+		if (!intmask) { 
+#ifdef I3C_GPIO_DBG
+			gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 1); /* High, Exit Target ISR */
+#endif
+			return; 
+		}
 	}
 
 	/* Check incoming header matched target dynamic address */
 	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_MATCHED)) {
-		nct_i3c_target_MATCHED_handler(dev);
-		if (intmask == NCT_I3C_INTMASKED_MATCHED) { return; }
-		intmask &= ~NCT_I3C_INTMASKED_MATCHED;
+		if (nct_i3c_target_MATCHED_handler(dev)) {
+			intmask |= BIT(NCT_I3C_INTMASKED_STOP);
+		} else if (intmask == BIT(NCT_I3C_INTMASKED_MATCHED)) {
+#ifdef I3C_GPIO_DBG
+			gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 1); /* High, Exit Target ISR */
+#endif
+			return;
 		}
 
-		/* HDR command, address match */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_DDRMATCHED)) {
-			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_DDRMATCH);
-		}
+		intmask &= ~BIT(NCT_I3C_INTMASKED_MATCHED);
+	}
+
+	/* HDR command, address match */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_DDRMATCHED)) {
+		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_DDRMATCH);
+	}
 
 	/* Check STOP detected */
 	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_STOP)) {
 		nct_i3c_target_STOP_handler(dev);
-		}
+	}
 
-		/* Event requested. IBI, hot-join, bus control */
-		if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_EVENT)) {
-			i3c_inst->STATUS = BIT(NCT_I3C_STATUS_EVENT);
-			if (GET_FIELD(i3c_inst->STATUS, NCT_I3C_STATUS_EVDET) ==
-			    STATUS_EVDET_REQ_SENT_ACKED) {
-				k_sem_give(&data->target_event_lock_sem);
+	/* Event requested. IBI, hot-join, bus control */
+	if (IS_BIT_SET(intmask, NCT_I3C_INTMASKED_EVENT)) {
+		/* EVDET must be sampled before the W1C, which resets the event detail. */
+		uint32_t evdet = GET_FIELD(i3c_inst->STATUS, NCT_I3C_STATUS_EVDET);
+
+		i3c_inst->STATUS = BIT(NCT_I3C_STATUS_EVENT);
+
+		/* A NACKed or unsent request also ends the IBI; holding the lock stalls the next one. */
+		if (evdet != STATUS_EVDET_NONE) {
+			if (evdet != STATUS_EVDET_REQ_SENT_ACKED) {
+				LOG_WRN("IBI not delivered, evdet=%u", evdet);
 			}
+
+			k_sem_give(&data->target_event_lock_sem);
+			set_oper_state(dev, I3C_OP_STATE_IDLE);
 		}
+	}
 
 	/*
 	 * Secondary controller (Controller register).
@@ -3323,9 +3689,13 @@ static void nct_i3c_target_isr(const struct device *dev)
 		i3c_inst->MSTATUS = BIT(NCT_I3C_MSTATUS_NOWCNTLR); /* W1C */
 		i3c_inst->CONFIG &= ~BIT(NCT_I3C_CONFIG_TGTENA);   /* Disable target mode */
 	}
+
+#ifdef I3C_GPIO_DBG
+	gpio_pin_set_raw(gpio3_dev, SLV_IRQ_PIN, 1); /* High, Exit Target ISR */
+#endif
 }
 
-void nct_i3c_isr(const struct device *dev)
+NCT_I3C_RAM_CODE void nct_i3c_isr(const struct device *dev)
 {
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 
@@ -3788,25 +4158,22 @@ static int nct_i3c_config_get(const struct device *dev, enum i3c_config_type typ
 
 	(void)memcpy(config, &data->common.ctrl_config, sizeof(data->common.ctrl_config));
 
-
+#if 0
 	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
 	uint32_t mstatus;
 	uint32_t mintset;
 	uint32_t mintmask;
-
 
 	mstatus = i3c_inst->MSTATUS;
 	mintset = i3c_inst->MINTSET;
 	mintmask = i3c_inst->MINTMASKED;
 
 	if (IS_BIT_SET(mstatus, NCT_I3C_MSTATUS_TGTSTART)) {
-//		IRQ_CONNECT(0x44, 0x03, nct_i3c_isr, dev, 0);
-//		irq_enable(0x44);
-return 2;		
+return 2;
 	} else {
 return 1;
 	}
-
+#endif
 	return 0;
 }
 
@@ -3847,6 +4214,10 @@ int nct_i3c_init(const struct device *dev)
 	k_sem_init(&data->ibi_lock_sem, 1, 1);
 	k_sem_init(&data->target_lock_sem, 1, 1);
 	k_sem_init(&data->target_event_lock_sem, 1, 1);
+#ifdef CONFIG_I3C_NCT_DMA
+	data->dev = dev;
+	k_work_init(&data->rx_publish_work, nct_i3c_target_publish_rx_work);
+#endif
 
 	ret = i3c_addr_slots_init(dev);
 	if (ret != 0) {
@@ -3860,6 +4231,15 @@ int nct_i3c_init(const struct device *dev)
 
 	/* Initial I3C device as controller or target */
 	nct_i3c_dev_init(dev);
+
+#ifdef I3C_GPIO_DBG	
+	/* GPIO30 debug output: push-pull high. */
+	gpio_pin_set(gpio3_dev, SLV_IRQ_PIN, 1); /* High, configure GPIO for debug */
+	gpio_pin_configure(gpio3_dev, SLV_IRQ_PIN, GPIO_OUTPUT | GPIO_PUSH_PULL);
+
+	gpio_pin_set(gpio3_dev, SLV_MARK_PIN, 1); /* High, configure GPIO for debug */
+	gpio_pin_configure(gpio3_dev, SLV_MARK_PIN, GPIO_OUTPUT | GPIO_PUSH_PULL);	
+#endif			   
 
 	/* Just in case the bus is not in idle. */
 	if (GET_FIELD(i3c_inst->MCONFIG, NCT_I3C_MCONFIG_CTRENA) ==
@@ -4022,16 +4402,30 @@ static int nct_i3c_target_tx_write(const struct device *dev, uint8_t *buf, uint1
 
 #ifdef CONFIG_I3C_NCT_DMA
 	struct nct_i3c_data *data = dev->data;
+	struct i3c_reg *i3c_inst = HAL_INSTANCE(dev);
+	struct pdma_dsct_reg *tx_dsct = NULL;
+	struct pdma_reg *pdma_inst;
+	uint8_t tx_dsct_idx;
 	bool is_rx = false;
 	bool no_ending = false;
 
-	data->tx_valid = true;
+	/* Drop any token left by a response that drained after its waiter gave up. */
+	k_sem_reset(&tx_fifo_empty_sem);
 
 	ret = nct_i3c_target_do_request_dma(dev, is_rx, buf, len, no_ending);
 	if (ret < 0) {
-		data->tx_valid = false;
 		LOG_ERR("do xfer fail");
+		return ret;
 	}
+
+	data->tx_valid = true;
+	tx_dsct_idx = nct_i3c_pdma_dsct(dev, false, &tx_dsct);
+	pdma_inst = (struct pdma_reg *)NCT_PDMA_BASE((uint32_t)tx_dsct);
+	LOG_DBG("I3C TX armed: len=%u dma=%08x txcount=%u chctl=%08x tdsts=%08x tx_ctl=%08x tx_sa=%08x tx_da=%08x idx=%u",
+		len, i3c_inst->DMACTRL,
+		GET_FIELD(i3c_inst->DATACTRL, NCT_I3C_DATACTRL_TXCOUNT),
+		pdma_inst->PDMA_CHCTL, pdma_inst->PDMA_TDSTS, tx_dsct->CTL,
+		tx_dsct->SA, tx_dsct->DA, tx_dsct_idx);
 
 	return ret;
 #else
@@ -4119,6 +4513,11 @@ const struct i3c_driver_api nct_i3c_driver_api = {
 
 #define I3C_NCT_DEVICE(inst)                                                         \
 	PINCTRL_DT_INST_DEFINE(inst);                                                              \
+	IF_ENABLED(CONFIG_I3C_NCT_DMA, (                                                           \
+		BUILD_ASSERT((NCT_I3C_PDMA_PAIR_IDX(inst) + 1) * NCT_I3C_SG_DESC_PER_INSTANCE <=   \
+				NCT_I3C_SG_POOL_DESC_COUNT,                                        \
+			     "I3C scatter-gather pool has insufficient descriptors for port " #inst); \
+	))                                                                                          \
 	static void nct_i3c_irq_config_##inst(const struct device *dev)                           \
 	{                                                                                             \
 		IRQ_CONNECT(DT_INST_IRQN(inst), DT_INST_IRQ(inst, priority), nct_i3c_isr,         \
@@ -4151,6 +4550,10 @@ const struct i3c_driver_api nct_i3c_driver_api = {
 			.pdma_tx = (struct pdma_dsct_reg *)DT_INST_REG_ADDR_BY_IDX(inst, 2), \
 			)) };                  \
 	static struct nct_i3c_data nct_i3c_data_##inst = {                                       \
+		IF_ENABLED(CONFIG_I3C_NCT_DMA, (                                                    \
+			.dsct_sg = &nct_i3c_sg_pool[NCT_I3C_PDMA_PAIR_IDX(inst) *                    \
+						    NCT_I3C_SG_DESC_PER_INSTANCE],                    \
+			))                                                                            \
 		.common.ctrl_config.is_secondary = DT_INST_PROP_OR(inst, secondary, false),        \
 		.config_target.static_addr = DT_INST_PROP_OR(inst, static_address, 0),             \
 		.config_target.pid = ((uint64_t)DT_INST_TGT_PID_PROP_OR(inst, tgt_pid, 0) << 32) | \
@@ -4224,6 +4627,7 @@ int i3c_nct_slave_put_read_data(const struct device *dev, struct i3c_slave_paylo
 	__ASSERT_NO_MSG(payload->size);
 
 	k_mutex_lock(&data->lock_mutex, K_FOREVER);
+	k_sem_reset(&tx_fifo_empty_sem);
 
 //	if (config->priv_xfer_pec) {
 //		uint8_t pec_v;
@@ -4239,7 +4643,12 @@ int i3c_nct_slave_put_read_data(const struct device *dev, struct i3c_slave_paylo
 //	 	xfer_buf[data->size] = pec_v;
 //	 	nct_i3c_target_tx_write(dev, data->buf, data->size + 1);
 //	} else {
-		nct_i3c_target_tx_write(dev, payload->buf, payload->size, 0);
+	ret = nct_i3c_target_tx_write(dev, payload->buf, payload->size, 0);
+	if (ret < 0) {
+		LOG_ERR("I3C target TX setup failed: %d", ret);
+		k_mutex_unlock(&data->lock_mutex);
+		return ret;
+	}
 //	}
 
 	target_register_tx_fifo_empty_cb(tx_fifo_empty_handler);
@@ -4283,23 +4692,17 @@ int i3c_nct_slave_put_read_data(const struct device *dev, struct i3c_slave_paylo
 		request.ibi_type = I3C_IBI_TARGET_INTR;
 		request.payload = ibi_notify->payload;
 		request.payload_len = ibi_notify->payload_len;
-		nct_i3c_target_ibi_raise(dev, &request);
+		ret = nct_i3c_target_ibi_raise(dev, &request);
+		if (ret < 0) {
+			LOG_ERR("I3C response IBI failed: %d", ret);
+			k_mutex_unlock(&data->lock_mutex);
+			return ret;
+		}
 	}
-
-	/*
-	 * osEventFlagsClear(obj->data_event, ~osFlagsError);
-	 * if (config->priv_xfer_pec) {
-	 *   xfer_buf = pec_append(dev, data->buf, data->size);
-	 *   i3c_npcm4xx_wr_tx_fifo(obj, xfer_buf, data->size + 1);
-	 *   k_free(xfer_buf);
-	 * } else {
-	 *   i3c_npcm4xx_wr_tx_fifo(obj, data->buf, data->size);
-	 * }
-	 */
 
 	k_mutex_unlock(&data->lock_mutex);
 
-	return 0;
+	return ret;
 }
 
 int i3c_nct_slave_get_dynamic_addr(const struct device *dev, uint8_t *dynamic_addr)
