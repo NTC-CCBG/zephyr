@@ -172,6 +172,8 @@ struct udc_nct_data {
 	uint8_t in_batch_buf[EP_MAX_PKT_SIZE];
 	struct udc_nct_ep_data ep_data[NUM_OF_EP_MAX];
 	struct k_spinlock dma_lock;
+	struct k_spinlock state_lock;
+	struct k_spinlock work_lock;
 };
 
 static void udc_nct_reset_ep_ram_state(const struct device *dev)
@@ -747,12 +749,22 @@ static int udc_nct_kick_ep(const struct device *dev, struct udc_ep_config *cfg)
 	return 0;
 }
 
+static int udc_nct_kick_ep_sync(const struct device *dev, struct udc_ep_config *cfg)
+{
+	struct udc_nct_data *priv = udc_get_private(dev);
+	k_spinlock_key_t key = k_spin_lock(&priv->state_lock);
+	int err = udc_nct_kick_ep(dev, cfg);
+
+	k_spin_unlock(&priv->state_lock, key);
+	return err;
+}
+
 static int usbd_ctrl_feed_dout(const struct device *dev, const size_t length)
 {
 	struct udc_nct_data *priv = udc_get_private(dev);
 	struct udc_ep_config *cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
 	struct net_buf *buf;
-	unsigned int lock_key;
+	k_spinlock_key_t state_key;
 
 	if (k_is_in_isr()) {
 		LOG_ERR("usbd_ctrl_feed_dout in ISR, len=%u (defer required)", (uint32_t)length);
@@ -770,9 +782,9 @@ static int usbd_ctrl_feed_dout(const struct device *dev, const size_t length)
 	}
 
 	net_buf_put(&cfg->fifo, buf);
-	lock_key = irq_lock();
+	state_key = k_spin_lock(&priv->state_lock);
 	priv->ctrl_out_queued++;
-	irq_unlock(lock_key);
+	k_spin_unlock(&priv->state_lock, state_key);
 	LOG_DBG("CTL feed_dout len=%u queued=%u", (uint32_t)length,
 		(uint32_t)priv->ctrl_out_queued);
 udc_nct_log_ctrl_buf_meta("CTL feed_dout new", buf);
@@ -787,7 +799,7 @@ static struct net_buf *udc_nct_ctrl_alloc_active_dout(const struct device *dev,
 	struct udc_nct_data *priv = udc_get_private(dev);
 	struct net_buf *buf;
 	struct net_buf *stale = NULL;
-	unsigned int lock_key;
+	k_spinlock_key_t state_key;
 
 	if (k_is_in_isr()) {
 		LOG_ERR("active_dout alloc in ISR, len=%u", (uint32_t)length);
@@ -800,10 +812,10 @@ static struct net_buf *udc_nct_ctrl_alloc_active_dout(const struct device *dev,
 	}
 
 	/* Swap the active OUT buffer pointer atomically w.r.t. the ISR reader. */
-	lock_key = irq_lock();
+	state_key = k_spin_lock(&priv->state_lock);
 	stale = priv->ctrl_out_active;
 	priv->ctrl_out_active = buf;
-	irq_unlock(lock_key);
+	k_spin_unlock(&priv->state_lock, state_key);
 
 	if (stale != NULL) {
 		LOG_WRN("CTL drop stale active OUT before alloc");
@@ -820,12 +832,12 @@ static void udc_nct_ctrl_drop_active_dout(const struct device *dev, const char *
 {
 	struct udc_nct_data *priv = udc_get_private(dev);
 	struct net_buf *stale;
-	unsigned int lock_key;
+	k_spinlock_key_t state_key;
 
-	lock_key = irq_lock();
+	state_key = k_spin_lock(&priv->state_lock);
 	stale = priv->ctrl_out_active;
 	priv->ctrl_out_active = NULL;
-	irq_unlock(lock_key);
+	k_spin_unlock(&priv->state_lock, state_key);
 
 	if (stale == NULL) {
 		return;
@@ -835,17 +847,23 @@ static void udc_nct_ctrl_drop_active_dout(const struct device *dev, const char *
 	net_buf_unref(stale);
 }
 
-static void udc_nct_ctrl_out_buf_popped(const struct device *dev)
+static void udc_nct_ctrl_out_buf_popped_locked(const struct device *dev)
 {
 	struct udc_nct_data *priv = udc_get_private(dev);
-	unsigned int lock_key;
 
-	/* Called from both ISR and thread context; keep the decrement atomic. */
-	lock_key = irq_lock();
 	if (priv->ctrl_out_queued > 0U) {
 		priv->ctrl_out_queued--;
 	}
-	irq_unlock(lock_key);
+}
+
+static void udc_nct_ctrl_out_buf_popped(const struct device *dev)
+{
+	struct udc_nct_data *priv = udc_get_private(dev);
+	k_spinlock_key_t state_key;
+
+	state_key = k_spin_lock(&priv->state_lock);
+	udc_nct_ctrl_out_buf_popped_locked(dev);
+	k_spin_unlock(&priv->state_lock, state_key);
 }
 
 static size_t udc_nct_buf_total_len(const struct net_buf *buf)
@@ -956,8 +974,10 @@ static void udc_nct_schedule_ctrl_out_feed(const struct device *dev,
 					   const char *reason)
 {
 	struct udc_nct_data *priv = udc_get_private(dev);
+	k_spinlock_key_t key = k_spin_lock(&priv->work_lock);
 
 	priv->ctrl_out_feed_len = (uint16_t)length;
+	k_spin_unlock(&priv->work_lock, key);
 	(void)k_work_submit(&priv->ctrl_status_out_work);
 	LOG_DBG("CTL[%s] defer control OUT feed len=%u", reason, (uint32_t)length);
 }
@@ -967,8 +987,10 @@ static void udc_nct_schedule_ctrl_out_refill_force(const struct device *dev,
 						    const char *reason)
 {
 	struct udc_nct_data *priv = udc_get_private(dev);
+	k_spinlock_key_t key = k_spin_lock(&priv->work_lock);
 
 	priv->ctrl_out_refill_force = 1U;
+	k_spin_unlock(&priv->work_lock, key);
 	udc_nct_schedule_ctrl_out_feed(dev, length, reason);
 }
 
@@ -977,9 +999,12 @@ static void udc_nct_ctrl_status_out_work_handler(struct k_work *work)
 	struct udc_nct_data *priv = CONTAINER_OF(work, struct udc_nct_data, ctrl_status_out_work);
 	const struct device *dev = priv->dev;
 	struct udc_data *data = dev->data;
+	k_spinlock_key_t key = k_spin_lock(&priv->work_lock);
 	bool force_refill = (priv->ctrl_out_refill_force != 0U);
 	int err;
 	size_t length = priv->ctrl_out_feed_len;
+	priv->ctrl_out_refill_force = 0U;
+	k_spin_unlock(&priv->work_lock, key);
 
 	if (!udc_is_enabled(dev)) {
 		return;
@@ -1010,8 +1035,7 @@ static void udc_nct_ctrl_status_out_work_handler(struct k_work *work)
 		}
 	}
 
-	err = usbd_ctrl_feed_dout(dev, length);	
-	priv->ctrl_out_refill_force = 0U;
+	err = usbd_ctrl_feed_dout(dev, length);
 	if (err != 0) {
 		LOG_ERR("feed control OUT failed: %d (len=%u)", err, (uint32_t)length);
 	} else {
@@ -1026,6 +1050,7 @@ static int udc_nct_handle_ctrl_in_done(const struct device *dev,
 				       struct net_buf *buf,
 				       const struct udc_nct_ctrl_evt *evt)
 {
+	struct udc_nct_data *priv = udc_get_private(dev);
 	int err = 0;
 
 	if (udc_ctrl_stage_is_status_in(dev) || udc_ctrl_stage_is_no_data(dev)) {
@@ -1054,7 +1079,7 @@ static int udc_nct_handle_ctrl_in_done(const struct device *dev,
 			 * thread for continued multi-packet processing.
 			 */
 			uint32_t xfer_len = MIN(buf->len, CEP_MAX_PKT_SIZE);
-			unsigned int lock_key;
+			k_spinlock_key_t state_key;
 
 			LOG_DBG("CTL DATA_IN multi-packet: sent=%u remaining=%u next_xfer=%u",
 				(uint32_t)tx_len, buf->len, xfer_len);
@@ -1062,20 +1087,19 @@ static int udc_nct_handle_ctrl_in_done(const struct device *dev,
 			struct udc_ep_config *in_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
 
 			/* Serialize CEP register/state access against the CEP ISR. */
-			lock_key = irq_lock();
+			state_key = k_spin_lock(&priv->state_lock);
 			for (uint32_t i = 0U; i < xfer_len; i++) {
 				M8(&USBD->USBD_CEPDAT_BYTE) = buf->data[i];
 			}
 			udc_buf_put(in_cfg, buf);
 			udc_ep_set_busy(dev, USB_CONTROL_EP_IN, true);
 			USBD->USBD_CEPTXCNT = xfer_len;
-			irq_unlock(lock_key);
+			k_spin_unlock(&priv->state_lock, state_key);
 			return 0;
 		}
 
 		if (udc_ep_buf_has_zlp(buf)) {
 			struct udc_ep_config *in_cfg = udc_get_ep_cfg(dev, USB_CONTROL_EP_IN);
-			unsigned int lock_key;
 			int kick_err;
 
 			/*
@@ -1087,9 +1111,7 @@ static int udc_nct_handle_ctrl_in_done(const struct device *dev,
 			udc_ep_buf_clear_zlp(buf);
 			udc_buf_put(in_cfg, buf);
 
-			lock_key = irq_lock();
-			kick_err = udc_nct_kick_ep(dev, in_cfg);
-			irq_unlock(lock_key);
+			kick_err = udc_nct_kick_ep_sync(dev, in_cfg);
 			return kick_err;
 		}
 
@@ -1250,10 +1272,10 @@ udc_nct_log_ctrl_buf_meta("CTL RXPK buf", buf);
 udc_nct_log_ep0_out_head(dev, "partial-before-requeue");
 
 				if (out_cfg == NULL) {
-					unsigned int lock_key = irq_lock();
+					k_spinlock_key_t state_key = k_spin_lock(&priv->state_lock);
 
 					priv->ctrl_out_active = NULL;
-					irq_unlock(lock_key);
+					k_spin_unlock(&priv->state_lock, state_key);
 
 					LOG_ERR("control OUT endpoint config missing");
 					net_buf_unref(buf);
@@ -1264,7 +1286,7 @@ udc_nct_log_ctrl_buf_meta("CTL RXPK partial active", buf);
 				{
 					unsigned int lock_key = irq_lock();
 
-					err = udc_nct_kick_ep(dev, out_cfg);
+					err = udc_nct_kick_ep_sync(dev, out_cfg);
 					irq_unlock(lock_key);
 				}
 				if (err != 0) {
@@ -1276,12 +1298,12 @@ udc_nct_log_ctrl_buf_meta("CTL RXPK partial active", buf);
 		}
 
 		{
-			unsigned int lock_key = irq_lock();
+			k_spinlock_key_t state_key = k_spin_lock(&priv->state_lock);
 
 			if (udc_ctrl_stage_is_data_out(dev) && priv->ctrl_out_active == buf) {
 				priv->ctrl_out_active = NULL;
 			}
-			irq_unlock(lock_key);
+			k_spin_unlock(&priv->state_lock, state_key);
 		}
 
 		err = usbd_ctrl_feed_dout(dev, SETUP_PKT_SIZE);
@@ -1499,7 +1521,7 @@ static void udc_nct_cep_isr(const struct device *dev)
 			return;
 		}
 
-		udc_nct_ctrl_out_buf_popped(dev);
+		udc_nct_ctrl_out_buf_popped_locked(dev);
 LOG_DBG("CTL SETUP pop setup#%u queued=%u", (uint32_t)priv->dbg_setup_seq, (uint32_t)priv->ctrl_out_queued);
 
 		net_buf_reset(buf);
@@ -1539,7 +1561,7 @@ udc_nct_log_ctrl_buf_meta("CTL RXPK active buf", buf);
 
 		if (buf != NULL) {
 			if (buf != priv->ctrl_out_active) {
-				udc_nct_ctrl_out_buf_popped(dev);
+					udc_nct_ctrl_out_buf_popped_locked(dev);
 				LOG_DBG("CTL RXPK pop len=%u queued=%u stage=%u setup#%u",
 					(uint32_t)len,
 					(uint32_t)priv->ctrl_out_queued,
@@ -1658,6 +1680,7 @@ static void udc_nct_isr(const struct device *dev)
 	volatile uint32_t IrqStL, IrqSt;
 	struct udc_nct_ctrl_evt evt = { 0 };
 	struct udc_nct_data *priv = udc_get_private(dev);
+	k_spinlock_key_t state_key;
 
 	/* get interrupt status */
 	IrqStL = USBD->USBD_GINTSTS & USBD->USBD_GINTEN;
@@ -1666,6 +1689,8 @@ static void udc_nct_isr(const struct device *dev)
 	if (!IrqStL) {
 		return;
 	}
+
+	state_key = k_spin_lock(&priv->state_lock);
 
 	bool enabled = udc_is_enabled(dev);	
 
@@ -1694,6 +1719,7 @@ static void udc_nct_isr(const struct device *dev)
 
 			/* Clear Bus interrupt flag */
 			USBD->USBD_BUSINTSTS = BIT(NCT_USBD_BUSINTSTS_RSTIF);
+			k_spin_unlock(&priv->state_lock, state_key);
 			return;
 		}
 
@@ -1902,6 +1928,8 @@ LOG_DBG("EP%d IN IRQ: no buffer, disable INT to avoid ISR flood", ep_hw);
 		udc_ep_set_busy(dev, ep_addr, false);
 		udc_submit_ep_event(dev, buf, 0);
 	}
+
+	k_spin_unlock(&priv->state_lock, state_key);
 }
 
 
@@ -1928,7 +1956,7 @@ static void udc_nct_process_ep_queue(const struct device *dev,
 
 	/* Serialize against the ISR, which also invokes udc_nct_kick_ep(). */
 	lock_key = irq_lock();
-	err = udc_nct_kick_ep(dev, cfg);
+	err = udc_nct_kick_ep_sync(dev, cfg);
 	irq_unlock(lock_key);
 	if (err != 0 && err != -EPERM) {
 		LOG_WRN("submit ep 0x%02x event failed: %d", cfg->addr, err);
@@ -1997,7 +2025,7 @@ static int udc_nct_ep_enqueue(const struct device *dev,
 
 	/* Serialize against the ISR, which also invokes udc_nct_kick_ep(). */
 	lock_key = irq_lock();
-	err = udc_nct_kick_ep(dev, cfg);
+	err = udc_nct_kick_ep_sync(dev, cfg);
 	irq_unlock(lock_key);
 	if (err != 0 && err != -EPERM) {
 		LOG_WRN("submit ep 0x%02x on enqueue failed: %d", cfg->addr, err);
@@ -2124,7 +2152,7 @@ USBD->USBD_CEPBUFEND - USBD->USBD_CEPBUFSTART + 1);
 		ep, ram_base, ram_end, buf_size, cfg->mps);
 
 	USBD->USBD_GINTEN |= (BIT(ep_idx) << 1);
-	udc_nct_kick_ep(dev, cfg);
+	(void)udc_nct_kick_ep_sync(dev, cfg);
 
 	return 0;
 }
