@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # zephyr-keep-sorted-start
+add_subdirectory_ifdef(CONFIG_C2H_NCT c2h_nct)
 add_subdirectory_ifdef(CONFIG_DEVMUX devmux)
 add_subdirectory_ifdef(CONFIG_ETHOS_U ethos_u)
 add_subdirectory_ifdef(CONFIG_FT800 ft8xx)

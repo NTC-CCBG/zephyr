@@ -23,3 +23,4 @@ zephyr_library_sources_ifdef(CONFIG_USB_DC_IT82XX2   usb_dc_it82xx2.c)
 zephyr_library_sources_ifdef(CONFIG_USB_DC_NUMAKER   usb_dc_numaker.c)
 
 endif()
+zephyr_library_sources_ifdef(CONFIG_USB_DC_NCT usb_dc_nct.c)

@@ -12,6 +12,7 @@ if PECI
 
 # zephyr-keep-sorted-start
 source "drivers/peci/Kconfig.it8xxx2"
+source "drivers/peci/Kconfig.nct"
 source "drivers/peci/Kconfig.npcx"
 source "drivers/peci/Kconfig.xec"
 # zephyr-keep-sorted-stop

@@ -59,6 +59,13 @@
 			clocks = <&pcc NCT_CLOCK_SPIM>;
 		};
 
+		flm: flm@4000f800 {
+			compatible = "nuvoton,nct-flm";
+			reg = <0x4000f800 0x300>;
+			interrupts = <28 3>;
+			status = "disabled";
+		};
+
 		qspi_fiu0: quad-fiu@40020000 {
 			clocks = <&pcc NCT_CLOCK_FIU>;
 		};

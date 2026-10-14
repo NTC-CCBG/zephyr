@@ -1,0 +1,17 @@
+# Copyright (c) 2025 Nuvoton Technology Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+config UDC_NCT
+	bool "Nuvoton NCT USB Device Controller Driver"
+	default y
+	depends on DT_HAS_NUVOTON_NCT_USBD_ENABLED && USB_DEVICE_STACK_NEXT
+	help
+	  This option enables the USB device driver for NCT family of processors.
+	  Say y if you wish to use USB device on NCT.
+
+config UDC_NCT_THREAD_STACK_SIZE
+	int "UDC NCT USB device controller driver internal thread stack size"
+	depends on UDC_NCT
+	default 512
+	help
+	  USB device controller driver internal thread stack size.

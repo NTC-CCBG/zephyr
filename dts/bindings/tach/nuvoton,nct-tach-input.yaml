@@ -1,0 +1,47 @@
+# Copyright (c) 2025 Nuvoton Technology Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+description: >
+  Nuvoton NCT tachometer input - a virtual sensor backed by an MFT controller.
+  Multiple tach-input nodes may reference the same MFT instance; the driver
+  time-multiplexes them via a spinlock (non-blocking).
+
+compatible: "nuvoton,nct-tach-input"
+
+include: [sensor-device.yaml, pinctrl-device.yaml]
+
+properties:
+  mft:
+    type: phandle
+    required: true
+    description: >
+      Phandle to the MFT controller node (compatible "nuvoton,nct-tach") that
+      drives this tachometer input.  Multiple tach-input nodes may share the
+      same MFT; each references it here.
+
+  pin-select:
+    type: int
+    required: true
+    description: >
+      TA pin index (0-9) routed to this tachometer input.  Use the
+      NCT_TACH_PIN_SELECT_* constants from
+      <zephyr/dt-bindings/sensor/nct_tach.h>.
+
+  sample-clk:
+    type: int
+    required: true
+    description: >
+      Desired sampling clock frequency in Hz.  When the parent MFT is sourced
+      from LFCLK (NCT_CLOCK_MFTx_LF), this must be 32768.  For APB-sourced
+      MFTs the prescaler is calculated automatically.
+
+  pulses-per-round:
+    type: int
+    required: true
+    description: Number of encoder pulses per shaft revolution.
+
+  pinctrl-0:
+    required: true
+
+  pinctrl-names:
+    required: true

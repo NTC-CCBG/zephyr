@@ -2445,4 +2445,543 @@ struct otp_reg {
 #define NCT_OTP_LOCK1_RGN5RDWRLOCK                  (6)
 #define NCT_OTP_LOCK1_RGN6RDWRLOCK                  (7)
 
+
+
+struct flm_reg {
+	/* 0x000: Configuration */
+	volatile uint32_t CFG;
+	/* 0x004: Status */
+	volatile uint32_t STAT;
+	/* 0x008: Log 0 ~ 1 */
+	volatile uint32_t LOG[2];
+	/* 0x010: Interrupt Enable */
+	volatile uint32_t IE;
+	/* 0x014: Control */
+	volatile uint32_t CTL;
+	volatile uint32_t reserved1[2];
+	/* 0x020: Range 0 ~ 7 */
+	volatile uint32_t RANG[8];
+	volatile uint32_t reserved2[8];
+	/* 0x060: Command Enable */
+	volatile uint32_t CMDEN;
+	/* 0x064: Command Byte Enable */
+	volatile uint32_t CMBEN;
+	volatile uint32_t reserved3[6];
+	/* 0x080: Command 0 ~ 31 */
+	volatile uint32_t CMD[32];
+	/* 0x100: Transaction Counter Read A0 ~ A3 */
+	volatile uint32_t TCRA[4];
+	/* 0x110: Transaction Counter Read B0 ~ B3 */
+	volatile uint32_t TCRB[4];
+	volatile uint32_t reserved4[8];
+	/* 0x140: Transaction Counter Control A0 ~ A3 */
+	volatile uint32_t TCCA[4];
+	/* 0x150: Transaction Counter Control B0 ~ B3 */
+	volatile uint32_t TCCB[4];
+	volatile uint32_t reserved5[8];
+	/* 0x180: Command Event */
+	volatile uint32_t CMDEV;
+	/* 0x184: Command Byte Event */
+	volatile uint32_t CMBEV;
+	/* 0x188: Transaction Counter Global Clear */
+	volatile uint32_t TCGC;
+	volatile uint32_t reserved6[13];
+	/* 0x1C0: Command Qualifier 0 ~ 3 */
+	volatile uint32_t CQ[4];
+	volatile uint32_t reserved7[44];
+	/* 0x280: Command Byte 0 ~ 31 */
+	volatile uint32_t CMB[32];
+};
+
+/* FLM register fields */
+#define NCT_FLM_CFG_DEVSIZ_FIELD             FIELD(0, 3)
+#define NCT_FLM_CFG_EBCHKDIS                 3
+#define NCT_FLM_CFG_CSOBYP                   14
+#define NCT_FLM_CFG_MON_MD                   15
+#define NCT_FLM_CFG_ALIAS                    29
+
+#define NCT_FLM_STAT_RJ_EV                   0
+#define NCT_FLM_STAT_SCI_EV                  1
+#define NCT_FLM_STAT_TCR_EV                  3
+#define NCT_FLM_STAT_RJ_TP1_FIELD            FIELD(4, 3)
+#define NCT_FLM_STAT_RJ_TP2_FIELD            FIELD(7, 3)
+#define NCT_FLM_STAT_RJ_NO_FIELD             FIELD(16, 8)
+
+#define NCT_FLM_LOG_RJ_ADDR_FIELD            FIELD(0, 24)
+#define NCT_FLM_LOG_RJ_CMD_FIELD             FIELD(24, 8)
+
+#define NCT_FLM_IE_RJ_IE                     0
+#define NCT_FLM_IE_CSI_IE                    1
+#define NCT_FLM_IE_TCR_IE                    3
+
+#define NCT_FLM_CTL_RDY                      0
+#define NCT_FLM_CTL_CHANGE                   1
+#define NCT_FLM_CTL_RLCK_FIELD               FIELD(8, 8)
+#define NCT_FLM_CTL_MEN                      30
+#define NCT_FLM_CTL_LCK                      31
+
+#define NCT_FLM_RANG_STRTRANG_FIELD          FIELD(0, 16)
+#define NCT_FLM_RANG_LASTRANG_FIELD          FIELD(16, 16)
+
+#define NCT_FLM_CMD_CMD_FIELD                FIELD(0, 8)
+#define NCT_FLM_CMD_ADDSZ                    11
+#define NCT_FLM_CMD_DATBPCK_FIELD            FIELD(12, 2)
+#define NCT_FLM_CMD_ADBPCK_FIELD             FIELD(14, 2)
+#define NCT_FLM_CMD_DUMBPCK_FIELD            FIELD(16, 2)
+#define NCT_FLM_CMD_DUMB_FIELD               FIELD(18, 2)
+#define NCT_FLM_CMD_CLAR                     20
+#define NCT_FLM_CMD_CARSEL_FIELD             FIELD(24, 8)
+
+#define NCT_FLM_TCGC_TCCLR                   0
+
+#define NCT_FLM_CQ_QMASK_FIELD               FIELD(0, 8)
+#define NCT_FLM_CQ_QVAL_FIELD                FIELD(8, 8)
+#define NCT_FLM_CQ_QBYTE_FIELD               FIELD(16, 4)
+#define NCT_FLM_CQ_QPOL                      20
+#define NCT_FLM_CQ_QEN_FIELD                 FIELD(24, 8)
+
+/*---------------------- OTP -------------------------*/
+
+struct i3c_reg {
+	/* 0x000: Controller Configuration */
+	volatile uint32_t MCONFIG;
+	/* 0x004: Target Configuration */
+	volatile uint32_t CONFIG;
+	/* 0x008: Target Status */
+	volatile uint32_t STATUS;
+	/* 0x00C: Target I3C Control */
+	volatile uint32_t CTRL;
+	/* 0x010: Target Interrupt Enable Set */
+	volatile uint32_t INTSET;
+	/* 0x014: Target Interrupt Enable Clear */
+	volatile uint32_t INTCLR;
+	/* 0x018: Target Interrupt Masked */
+	volatile uint32_t INTMASKED;
+	/* 0x01C: Target Error and Warning */
+	volatile uint32_t ERRWARN;
+	/* 0x020: Target DMA Control */
+	volatile uint32_t DMACTRL;
+	volatile uint32_t reserved1[2];
+	/* 0x02C: Target Data Control */
+	volatile uint32_t DATACTRL;
+	/* 0x030: Target Write Byte Data */
+	volatile uint32_t WDATAB;
+	/* 0x034: Target Write Byte Data as End */
+	volatile uint32_t WDATABE;
+	/* 0x038: Target Write Half-Word Data */
+	volatile uint32_t WDATAH;
+	/* 0x03C: Target Write Half-Word Data as End */
+	volatile uint32_t WDATAHE;
+	/* 0x040: Target Read Byte Data */
+	volatile uint32_t RDATAB;
+	volatile uint32_t reserved2;
+	/* 0x048: Target Read Half-Word Data */
+	volatile uint32_t RDATAH;
+	volatile uint32_t reserved3[2];
+	/* 0x054: Target Byte-Only Write Byte Data */
+	volatile uint8_t WDATAB1;
+	volatile uint8_t reserved4[11];
+	/* 0x060: Target Capabilities */
+	volatile uint32_t CAPABILITIES;
+	/* 0x064: Target Dynamic Address */
+	volatile uint32_t DYNADDR;
+	/* 0x068: Target Maximum Limits */
+	volatile uint32_t MAXLIMITS;
+	/* 0x06C: Target Part Number */
+	volatile uint32_t PARTNO;
+	/* 0x070: Target ID Extension */
+	volatile uint32_t IDEXT;
+	/* 0x074: Target Vendor ID */
+	volatile uint32_t VENDORID;
+	/* 0x078: Target Timing Control Clock */
+	volatile uint32_t TCCLOCK;
+	volatile uint32_t reserved5[2];
+	/* 0x084: Controller Control */
+	volatile uint32_t MCTRL;
+	/* 0x088: Controller Status */
+	volatile uint32_t MSTATUS;
+	/* 0x08C: Controller IBI Registry and Rules */
+	volatile uint32_t IBIRULES;
+	/* 0x090: Controller Interrupt Enable Set */
+	volatile uint32_t MINTSET;
+	/* 0x094: Controller Interrupt Enable Clear */
+	volatile uint32_t MINTCLR;
+	/* 0x098: Controller Interrupt Masked */
+	volatile uint32_t MINTMASKED;
+	/* 0x09C: Controller Error and Warning */
+	volatile uint32_t MERRWARN;
+	/* 0x0A0: Controller DMA Control */
+	volatile uint32_t MDMACTRL;
+	volatile uint32_t reserved6[2];
+	/* 0x0AC: Controller Data Control */
+	volatile uint32_t MDATACTRL;
+	/* 0x0B0: Controller Write Byte Data */
+	volatile uint32_t MWDATAB;
+	/* 0x0B4: Controller Write Byte Data as End */
+	volatile uint32_t MWDATABE;
+	/* 0x0B8: Controller Write Half-Word Data */
+	volatile uint32_t MWDATAH;
+	/* 0x0BC: Controller Write Half-Word Data as End */
+	volatile uint32_t MWDATAHE;
+	/* 0x0C0: Controller Read Byte Data */
+	volatile uint32_t MRDATAB;
+	volatile uint32_t reserved7;
+	/* 0x0C8: Controller Read Half-Word Data */
+	volatile uint32_t MRDATAH;
+	/* 0x0CC: Controller Byte-Only Write Byte Data */
+	volatile uint8_t MWDATAB1;
+	volatile uint8_t reserved8[3];
+	/* 0x0D0: Controller Start or Continue SDR Message */
+	volatile uint32_t MWMSG_SDR;
+	/* 0x0D4: Controller Read SDR Message Data */
+	volatile uint32_t MRMSG_SDR;
+	/* 0x0D8: Controller Start or Continue DDR Message */
+	volatile uint32_t MWMSG_DDR;
+	/* 0x0DC: Controller Read DDR Message Data */
+	volatile uint32_t MRMSG_DDR;
+	volatile uint32_t reserved9;
+	/* 0x0E4: Controller Dynamic Address */
+	volatile uint32_t MDYNADDR;
+	volatile uint32_t reserved10[8];
+	/* 0x108: Target HDR Command Register */
+	volatile uint32_t HDRCMD;
+	volatile uint32_t reserved11[13];
+	/* 0x140: Target Extended IBI Data Register 1 */
+	volatile uint32_t IBIEXT1;
+	/* 0x144: Target Extended IBI Data Register 2 */
+	volatile uint32_t IBIEXT2;
+	volatile uint32_t reserved12[45];
+	/* 0x1FC: Target Block ID */
+	volatile uint32_t ID;
+};
+
+/* I3C Controller register fields */
+#define NCT_I3C_MCONFIG_I2CBAUD	FIELD(28, 4)
+#define NCT_I3C_MCONFIG_ODHPP		24
+#define NCT_I3C_MCONFIG_ODBAUD		FIELD(16, 8)
+#define NCT_I3C_MCONFIG_PPLOW		FIELD(12, 4)
+#define NCT_I3C_MCONFIG_PPBAUD		FIELD(8, 4)
+#define NCT_I3C_MCONFIG_ODSTOP		6
+#define NCT_I3C_MCONFIG_DISTO		3
+#define NCT_I3C_MCONFIG_CTRENA		FIELD(0, 2)
+#define NCT_I3C_MCTRL_RDTERM		FIELD(16, 8)
+#define NCT_I3C_MCTRL_ADDR		FIELD(9, 7)
+#define NCT_I3C_MCTRL_DIR		8
+#define NCT_I3C_MCTRL_IBIRESP		FIELD(6, 2)
+#define NCT_I3C_MCTRL_TYPE		FIELD(4, 2)
+#define NCT_I3C_MCTRL_REQUEST		FIELD(0, 3)
+#define NCT_I3C_MSTATUS_IBIADDR	FIELD(24, 7)
+#define NCT_I3C_MSTATUS_NOWCNTLR	19
+#define NCT_I3C_MSTATUS_ERRWARN	15
+#define NCT_I3C_MSTATUS_IBIWON		13
+#define NCT_I3C_MSTATUS_TXNOTFULL	12
+#define NCT_I3C_MSTATUS_RXPEND		11
+#define NCT_I3C_MSTATUS_COMPLETE	10
+#define NCT_I3C_MSTATUS_MCTRLDONE	9
+#define NCT_I3C_MSTATUS_TGTSTART	8
+#define NCT_I3C_MSTATUS_IBITYPE	FIELD(6, 2)
+#define NCT_I3C_MSTATUS_NACKED		5
+#define NCT_I3C_MSTATUS_BETWEEN	4
+#define NCT_I3C_MSTATUS_STATE		FIELD(0, 3)
+#define NCT_I3C_IBIRULES_NOBYTE	31
+#define NCT_I3C_IBIRULES_MSB0		30
+#define NCT_I3C_IBIRULES_ADDR4		FIELD(24, 6)
+#define NCT_I3C_IBIRULES_ADDR3		FIELD(18, 6)
+#define NCT_I3C_IBIRULES_ADDR2		FIELD(12, 6)
+#define NCT_I3C_IBIRULES_ADDR1		FIELD(6, 6)
+#define NCT_I3C_IBIRULES_ADDR0		FIELD(0, 6)
+#define NCT_I3C_MINTSET_NOWMASTER	19
+#define NCT_I3C_MINTSET_ERRWARN	15
+#define NCT_I3C_MINTSET_IBIWON		13
+#define NCT_I3C_MINTSET_TXNOTFULL	12
+#define NCT_I3C_MINTSET_RXPEND		11
+#define NCT_I3C_MINTSET_COMPLETE	10
+#define NCT_I3C_MINTSET_MCTRLDONE	9
+#define NCT_I3C_MINTSET_TGTSTART	8
+#define NCT_I3C_MINTCLR_NOWMASTER	19
+#define NCT_I3C_MINTCLR_ERRWARN	15
+#define NCT_I3C_MINTCLR_IBIWON		13
+#define NCT_I3C_MINTCLR_TXNOTFULL	12
+#define NCT_I3C_MINTCLR_RXPEND		11
+#define NCT_I3C_MINTCLR_COMPLETE	10
+#define NCT_I3C_MINTCLR_MCTRLDONE	9
+#define NCT_I3C_MINTCLR_TGTSTART	8
+#define NCT_I3C_MINTMASKED_NOWMASTER	19
+#define NCT_I3C_MINTMASKED_ERRWARN	15
+#define NCT_I3C_MINTMASKED_IBIWON	13
+#define NCT_I3C_MINTMASKED_TXNOTFULL	12
+#define NCT_I3C_MINTMASKED_RXPEND	11
+#define NCT_I3C_MINTMASKED_COMPLETE	10
+#define NCT_I3C_MINTMASKED_MCTRLDONE	9
+#define NCT_I3C_MINTMASKED_TGTSTART	8
+#define NCT_I3C_MERRWARN_TIMEOUT	20
+#define NCT_I3C_MERRWARN_INVREQ	19
+#define NCT_I3C_MERRWARN_MSGERR	18
+#define NCT_I3C_MERRWARN_OWRITE	17
+#define NCT_I3C_MERRWARN_OREAD		16
+#define NCT_I3C_MERRWARN_HCRC		10
+#define NCT_I3C_MERRWARN_HPAR		9
+#define NCT_I3C_MERRWARN_TERM		4
+#define NCT_I3C_MERRWARN_WRABT		3
+#define NCT_I3C_MERRWARN_NACK		2
+#define NCT_I3C_MDMACTRL_DMAWIDTH	FIELD(4, 2)
+#define NCT_I3C_MDMACTRL_DMATB		FIELD(2, 2)
+#define NCT_I3C_MDMACTRL_DMAFB		FIELD(0, 2)
+#define NCT_I3C_MDATACTRL_RXEMPTY	31
+#define NCT_I3C_MDATACTRL_TXFULL	30
+#define NCT_I3C_MDATACTRL_RXCOUNT	FIELD(24, 5)
+#define NCT_I3C_MDATACTRL_TXCOUNT	FIELD(16, 5)
+#define NCT_I3C_MDATACTRL_RXTRIG	FIELD(6, 2)
+#define NCT_I3C_MDATACTRL_TXTRIG	FIELD(4, 2)
+#define NCT_I3C_MDATACTRL_UNLOCK	3
+#define NCT_I3C_MDATACTRL_FLUSHFB	1
+#define NCT_I3C_MDATACTRL_FLUSHTB	0
+#define NCT_I3C_MWDATAB_END_A		16
+#define NCT_I3C_MWDATAB_END_B		8
+#define NCT_I3C_MWDATAB_DATA		FIELD(0, 8)
+#define NCT_I3C_MWDATABE_DATA		FIELD(0, 8)
+#define NCT_I3C_MWDATAH_END		16
+#define NCT_I3C_MWDATAH_DATA1		FIELD(8, 8)
+#define NCT_I3C_MWDATAH_DATA0		FIELD(0, 8)
+#define NCT_I3C_MWDATAHE_DATA1		FIELD(8, 8)
+#define NCT_I3C_MWDATAHE_DATA0		FIELD(0, 8)
+#define NCT_I3C_MRDATAB_DATA		FIELD(0, 8)
+#define NCT_I3C_MRDATAH_DATA1		FIELD(8, 8)
+#define NCT_I3C_MRDATAH_DATA0		FIELD(0, 8)
+#define NCT_I3C_MWDATAB1_DATA		FIELD(0, 8)
+#define NCT_I3C_MWMSG_SDR_CONTROL_LEN	FIELD(11, 5)
+#define NCT_I3C_MWMSG_SDR_CONTROL_I2C	10
+#define NCT_I3C_MWMSG_SDR_CONTROL_END	8
+#define NCT_I3C_MWMSG_SDR_CONTROL_ADDR	FIELD(1, 7)
+#define NCT_I3C_MWMSG_SDR_CONTROL_DIR	0
+#define NCT_I3C_MWMSG_SDR_DATA		FIELD(0, 16)
+#define NCT_I3C_MRMSG_SDR_DATA		FIELD(0, 16)
+#define NCT_I3C_MWMSG_DDR_CONTROL_END	14
+#define NCT_I3C_MWMSG_DDR_CONTROL_LEN	FIELD(0, 10)
+#define NCT_I3C_MWMSG_DDR_CONTROL_ADDR	FIELD(9, 7)
+#define NCT_I3C_MWMSG_DDR_CONTROL_DIR	7
+#define NCT_I3C_MWMSG_DDR_CONTROL_CMD	FIELD(0, 7)
+#define NCT_I3C_MWMSG_DDR_DATA		FIELD(0, 16)
+#define NCT_I3C_MRMSG_DDR_DATA		FIELD(0, 16)
+#define NCT_I3C_MDYNADDR_DADDR		FIELD(1, 7)
+#define NCT_I3C_MDYNADDR_DAVALID	0
+
+/* MCONFIG options */
+#define MCONFIG_CTRENA_OFF		0x0
+#define MCONFIG_CTRENA_ON		0x1
+#define MCONFIG_CTRENA_CAPABLE		0x2
+#define MCONFIG_HKEEP_EXT_SDA_SCL	0x3
+
+/* MCTRL options */
+#define MCTRL_REQUEST_NONE		0 /* None */
+#define MCTRL_REQUEST_EMITSTARTADDR	1 /* Emit a START */
+#define MCTRL_REQUEST_EMITSTOP		2 /* Emit a STOP */
+#define MCTRL_REQUEST_IBIACKNACK	3 /* Manually ACK or NACK an IBI */
+#define MCTRL_REQUEST_PROCESSDAA	4 /* Starts the DAA process */
+#define MCTRL_REQUEST_FORCEEXIT		6 /* Emit HDR Exit Pattern  */
+/* Emits a START with address 7Eh when a slave pulls I3C_SDA low to request an IBI */
+#define MCTRL_REQUEST_AUTOIBI		7
+
+/* ACK with mandatory byte determined by IBIRULES or ACK with no mandatory byte */
+#define MCTRL_IBIRESP_ACK		0
+#define MCTRL_IBIRESP_NACK		1 /* NACK */
+#define MCTRL_IBIRESP_ACK_MANDATORY	2 /* ACK with mandatory byte  */
+#define MCTRL_IBIRESP_MANUAL		3
+
+enum nct_i3c_mctrl_type {
+	NCT_I3C_MCTRL_TYPE_I3C,
+	NCT_I3C_MCTRL_TYPE_I2C,
+	NCT_I3C_MCTRL_TYPE_I3C_HDR_DDR,
+};
+
+/* MSTATUS options */
+#define MSTATUS_STATE_IDLE		0x0
+#define MSTATUS_STATE_TGTREQ		0x1
+#define MSTATUS_STATE_NORMACT		0x3 /* SDR message mode */
+#define MSTATUS_STATE_MSGDDR		0x4
+#define MSTATUS_STATE_DAA		0x5
+#define MSTATUS_STATE_IBIACK		0x6
+#define MSTATUS_STATE_IBIRCV		0x7
+#define MSTATUS_IBITYPE_NONE		0x0
+#define MSTATUS_IBITYPE_IBI		0x1
+#define MSTATUS_IBITYPE_CR		0x2
+#define MSTATUS_IBITYPE_HJ		0x3
+
+/* IBIRULES */
+#define IBIRULES_ADDR_MSK		0x3F
+#define IBIRULES_ADDR_SHIFT		0x6
+
+/* MDMACTRL options */
+#define MDMA_DMAFB_DISABLE		0x0
+#define MDMA_DMAFB_EN_ONE_FRAME		0x1
+#define MDMA_DMAFB_EN_MANUAL		0x2
+#define MDMA_DMATB_DISABLE		0x0
+#define MDMA_DMATB_EN_ONE_FRAME		0x1
+#define MDMA_DMATB_EN_MANUAL		0x2
+
+/* I3C Target register fields */
+#define NCT_I3C_CONFIG_SADDR		FIELD(25, 7)
+#define NCT_I3C_CONFIG_BAMATCH		FIELD(16, 7)
+#define NCT_I3C_CONFIG_HDRCMD		10
+#define NCT_I3C_CONFIG_OFFLINE		9
+#define NCT_I3C_CONFIG_IDRAND		8
+#define NCT_I3C_CONFIG_DDROK		4
+#define NCT_I3C_CONFIG_S0IGNORE	3
+#define NCT_I3C_CONFIG_MATCHSS		2
+#define NCT_I3C_CONFIG_NACK		1
+#define NCT_I3C_CONFIG_TGTENA		0
+#define NCT_I3C_STATUS_TIMECTRL	FIELD(30, 2)
+#define NCT_I3C_STATUS_ACTSTATE	FIELD(28, 2)
+#define NCT_I3C_STATUS_HJDIS		27
+#define NCT_I3C_STATUS_MRDIS		25
+#define NCT_I3C_STATUS_IBIDIS		24
+#define NCT_I3C_STATUS_EVDET		FIELD(20, 2)
+#define NCT_I3C_STATUS_EVENT		18
+#define NCT_I3C_STATUS_CHANDLED	17
+#define NCT_I3C_STATUS_DDRMATCH	16
+#define NCT_I3C_STATUS_ERRWARN		15
+#define NCT_I3C_STATUS_CCC		14
+#define NCT_I3C_STATUS_DACHG		13
+#define NCT_I3C_STATUS_TXNOTFULL	12
+#define NCT_I3C_STATUS_RXPEND		11
+#define NCT_I3C_STATUS_STOP		10
+#define NCT_I3C_STATUS_MATCHED		9
+#define NCT_I3C_STATUS_START		8
+#define NCT_I3C_STATUS_STHDR		6
+#define NCT_I3C_STATUS_STDAA		5
+#define NCT_I3C_STATUS_STREQWR		4
+#define NCT_I3C_STATUS_STREQRD		3
+#define NCT_I3C_STATUS_STCCCH		2
+#define NCT_I3C_STATUS_STMSG		1
+#define NCT_I3C_STATUS_STNOTSTOP	0
+#define NCT_I3C_CTRL_VENDINFO		FIELD(24, 8)
+#define NCT_I3C_CTRL_ACTSTATE		FIELD(20, 2)
+#define NCT_I3C_CTRL_PENDINT		FIELD(16, 4)
+#define NCT_I3C_CTRL_IBIDATA		FIELD(8, 8)
+#define NCT_I3C_CTRL_EXTDATA		3
+#define NCT_I3C_CTRL_EVENT		FIELD(0, 2)
+#define NCT_I3C_INTSET_EVENT		18
+#define NCT_I3C_INTSET_CHANDLED	17
+#define NCT_I3C_INTSET_DDRMATCHED	16
+#define NCT_I3C_INTSET_ERRWARN		15
+#define NCT_I3C_INTSET_CCC		14
+#define NCT_I3C_INTSET_DACHG		13
+#define NCT_I3C_INTSET_TXNOTFULL	12
+#define NCT_I3C_INTSET_RXPEND		11
+#define NCT_I3C_INTSET_STOP		10
+#define NCT_I3C_INTSET_MATCHED		9
+#define NCT_I3C_INTSET_START		8
+#define NCT_I3C_INTCLR_EVENT		18
+#define NCT_I3C_INTCLR_CHANDLED	17
+#define NCT_I3C_INTCLR_DDRMATCHED	16
+#define NCT_I3C_INTCLR_ERRWARN		15
+#define NCT_I3C_INTCLR_CCC		14
+#define NCT_I3C_INTCLR_DACHG		13
+#define NCT_I3C_INTCLR_TXNOTFULL	12
+#define NCT_I3C_INTCLR_RXPEND		11
+#define NCT_I3C_INTCLR_STOP		10
+#define NCT_I3C_INTCLR_MATCHED		9
+#define NCT_I3C_INTCLR_START		8
+#define NCT_I3C_INTMASKED_EVENT	18
+#define NCT_I3C_INTMASKED_CHANDLED	17
+#define NCT_I3C_INTMASKED_DDRMATCHED	16
+#define NCT_I3C_INTMASKED_ERRWARN	15
+#define NCT_I3C_INTMASKED_CCC		14
+#define NCT_I3C_INTMASKED_DACHG	13
+#define NCT_I3C_INTMASKED_TXNOTFULL	12
+#define NCT_I3C_INTMASKED_RXPEND	11
+#define NCT_I3C_INTMASKED_STOP		10
+#define NCT_I3C_INTMASKED_MATCHED	9
+#define NCT_I3C_INTMASKED_START	8
+#define NCT_I3C_ERRWARN_OWRITE		17
+#define NCT_I3C_ERRWARN_OREAD		16
+#define NCT_I3C_ERRWARN_S0S1		11
+#define NCT_I3C_ERRWARN_HCRC		10
+#define NCT_I3C_ERRWARN_HPAR		9
+#define NCT_I3C_ERRWARN_SPAR		8
+#define NCT_I3C_ERRWARN_INVSTART	4
+#define NCT_I3C_ERRWARN_TERM		3
+#define NCT_I3C_ERRWARN_URUNNACK	2
+#define NCT_I3C_ERRWARN_URUN		1
+#define NCT_I3C_ERRWARN_ORUN		0
+#define NCT_I3C_DMACTRL_DMAWIDTH	FIELD(4, 2)
+#define NCT_I3C_DMACTRL_DMATB		FIELD(2, 2)
+#define NCT_I3C_DMACTRL_DMAFB		FIELD(0, 2)
+#define NCT_I3C_DATACTRL_RXEMPTY	31
+#define NCT_I3C_DATACTRL_TXFULL	30
+#define NCT_I3C_DATACTRL_RXCOUNT	FIELD(24, 5)
+#define NCT_I3C_DATACTRL_TXCOUNT	FIELD(16, 5)
+#define NCT_I3C_DATACTRL_RXTRIG	FIELD(6, 2)
+#define NCT_I3C_DATACTRL_TXTRIG	FIELD(4, 2)
+#define NCT_I3C_DATACTRL_UNLOCK	3
+#define NCT_I3C_DATACTRL_FLUSHFB	1
+#define NCT_I3C_DATACTRL_FLUSHTB	0
+#define NCT_I3C_WDATAB_END_A		16
+#define NCT_I3C_WDATAB_END_B		8
+#define NCT_I3C_WDATAB_DATA		FIELD(0, 8)
+#define NCT_I3C_WDATABE_DATA		FIELD(0, 8)
+#define NCT_I3C_WDATAH_END		16
+#define NCT_I3C_WDATAH_DATA1		FIELD(8, 8)
+#define NCT_I3C_WDATAH_DATA0		FIELD(0, 8)
+#define NCT_I3C_WDATAHE_DATA1		FIELD(8, 8)
+#define NCT_I3C_WDATAHE_DATA0		FIELD(0, 8)
+#define NCT_I3C_RDATAB_DATA0		FIELD(0, 8)
+#define NCT_I3C_RDATAH_DATA1		FIELD(8, 8)
+#define NCT_I3C_RDATAH_DATA0		FIELD(0, 8)
+#define NCT_I3C_WDATAB1_DATA		FIELD(0, 8)
+#define NCT_I3C_CAPABILITIES_DMA	31
+#define NCT_I3C_CAPABILITIES_INT	30
+#define NCT_I3C_CAPABILITIES_FIFORX	FIELD(28, 2)
+#define NCT_I3C_CAPABILITIES_FIFOTX	FIELD(26, 2)
+#define NCT_I3C_CAPABILITIES_TIMECTRL	21
+#define NCT_I3C_CAPABILITIES_IBI_MR_HJ	FIELD(16, 5)
+#define NCT_I3C_CAPABILITIES_CCCHANDLE	FIELD(12, 4)
+#define NCT_I3C_CAPABILITIES_SADDR	FIELD(10, 2)
+#define NCT_I3C_CAPABILITIES_HDRSUPP	6
+#define NCT_I3C_CAPABILITIES_IDREG	FIELD(2, 4)
+#define NCT_I3C_CAPABILITIES_IDENA	FIELD(0, 2)
+#define NCT_I3C_DYNADDR_DADDR		FIELD(1, 7)
+#define NCT_I3C_DYNADDR_DAVALID	0
+#define NCT_I3C_MAXLIMITS_MAXWR	FIELD(16, 12)
+#define NCT_I3C_MAXLIMITS_MAXRD	FIELD(0, 12)
+#define NCT_I3C_PARTNO_PARTNO		FIELD(0, 32)
+#define NCT_I3C_IDEXT_BCR		FIELD(16, 8)
+#define NCT_I3C_IDEXT_DCR		FIELD(8, 8)
+#define NCT_I3C_VENDORID_VID		FIELD(0, 15)
+#define NCT_I3C_TCCLOCK_FREQ		FIELD(8, 8)
+#define NCT_I3C_TCCLOCK_ACCURACY	FIELD(0, 8)
+#define NCT_I3C_IBIEXT1_EXT3		FIELD(24, 8)
+#define NCT_I3C_IBIEXT1_EXT2		FIELD(16, 8)
+#define NCT_I3C_IBIEXT1_EXT1		FIELD(8, 8)
+#define NCT_I3C_IBIEXT1_MAX		FIELD(4, 3)
+#define NCT_I3C_IBIEXT1_CNT		FIELD(0, 3)
+#define NCT_I3C_IBIEXT2_EXT7		FIELD(24, 8)
+#define NCT_I3C_IBIEXT2_EXT6		FIELD(16, 8)
+#define NCT_I3C_IBIEXT2_EXT5		FIELD(8, 8)
+#define NCT_I3C_IBIEXT2_EXT4		FIELD(0, 8)
+#define NCT_I3C_HDRCMD_NEWCMD		31
+#define NCT_I3C_HDRCMD_OVFLW		30
+#define NCT_I3C_HDRCMD_CMD0		FIELD(0, 8)
+#define NCT_I3C_ID_ID			FIELD(0, 32)
+
+/* CTRL register options */
+#define CTRL_EVENT_NORMAL    0
+#define CTRL_EVENT_IBI       1
+#define CTRL_EVENT_CNTLR_REQ 2
+#define CTRL_EVENT_HJ        3
+
+/* STATUS register options */
+#define STATUS_EVDET_NONE            0
+#define STATUS_EVDET_REQ_NOT_SENT    1
+#define STATUS_EVDET_REQ_SENT_NACKED 2
+#define STATUS_EVDET_REQ_SENT_ACKED  3
+
+/* DMACTRL options */
+#define DMA_DMAFB_DISABLE		0x0
+#define DMA_DMAFB_EN_ONE_FRAME		0x1
+#define DMA_DMAFB_EN_MANUAL		0x2
+#define DMA_DMATB_DISABLE		0x0
+#define DMA_DMATB_EN_ONE_FRAME		0x1
+#define DMA_DMATB_EN_MANUAL		0x2
+
 #endif /* _NUVOTON_NCT_SOC_REG_DEF_H */

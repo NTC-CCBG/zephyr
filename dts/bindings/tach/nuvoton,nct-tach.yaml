@@ -1,0 +1,31 @@
+# Copyright (c) 2025 Nuvoton Technology Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+description: Nuvoton NCT Multi-Function Timer (MFT) controller
+
+compatible: "nuvoton,nct-tach"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+  clocks:
+    required: true
+  tach-channel:
+    type: int
+    description: |
+      Index of the MFT hardware module (1, 2, or 3).
+      Do not override in board-level device trees.
+  pin-select:
+    type: int
+    description: TA pin index routed to this tachometer input.
+  pin-static:
+    type: boolean
+    description: Tachometer pin is fixed and cannot be selected.
+  sample-clk:
+    type: int
+    description: Tachometer sampling clock selection.
+  pulses-per-round:
+    type: int
+    description: Encoder pulses per revolution.

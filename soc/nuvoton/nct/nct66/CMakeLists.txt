@@ -12,6 +12,7 @@ zephyr_sources(
   soc.c
   gdma.c
   header.c
+  flm.c
 )
 
 set(SOC_LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker.ld CACHE INTERNAL "")

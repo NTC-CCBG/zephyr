@@ -1,0 +1,35 @@
+# NCT I3C driver configuration options
+
+# Copyright (c) 2024 Nuvoton Technology Corporation.
+# SPDX-License-Identifier: Apache-2.0
+
+config I3C_NCT
+	bool "Nuvoton NCT enhance super I/O (eSIO) I3C driver"
+	select I3C_IBI_WORKQUEUE if I3C_USE_IBI
+	default y
+	help
+	  This option enables the I3C driver for NCT family of
+	  processors.
+	  Say y if you wish to use I3C channels on NCT MCU.
+
+config I3C_NCT_DMA
+	bool "Nuvoton NCT enhance super I/O (eSIO) I3C driver DMA support"
+	depends on I3C_NCT
+	default y
+	help
+	  Enable DMA support for nct I3C.
+
+config I3C_NCT_EXT_DEVICE
+	bool "Enable NCT I3C external device support"
+	depends on I3C
+	help
+	  Enable support for NCT I3C external device driver.
+
+comment "Initialization Priority"
+
+config I3C_TARGET_INIT_PRIORITY
+	int "I3C Target Init Priority"
+	# Default is just after CONFIG_KERNEL_INIT_PRIORITY_DEVICE
+	default 50
+	help
+	  This is for setting up I3C target device driver instance
