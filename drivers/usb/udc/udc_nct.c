@@ -553,6 +553,10 @@ static int udc_nct_kick_ep(const struct device *dev, struct udc_ep_config *cfg)
 	uint8_t ep_idx = USB_EP_GET_IDX(ep);
 
 	if (!cfg->stat.enabled || cfg->stat.halted) {
+		if (ep_idx != 0U && USB_EP_DIR_IS_OUT(ep)) {
+			LOG_WRN("EP 0x%02x OUT: kick skipped, enabled=%u halted=%u", ep,
+				(uint32_t)cfg->stat.enabled, (uint32_t)cfg->stat.halted);
+		}
 		return 0;
 	}
 
@@ -571,6 +575,43 @@ static int udc_nct_kick_ep(const struct device *dev, struct udc_ep_config *cfg)
 			if (q_depth > 1U) {
 				LOG_DBG("EP 0x%02x IN: busy skip kick, q_depth=%u", ep,
 					(uint32_t)q_depth);
+			}
+		} else if (ep_idx != 0U) {
+			/*
+			 * For hardware to keep NAKing, the OUT endpoint must actually be
+			 * unready at the HW level. Check the two bits that control that:
+			 * EPCFG.EPEN (HW enable, tracked separately from cfg->stat.enabled)
+			 * and EPINTEN.RXPKIEN (RX interrupt armed). busy=true while waiting
+			 * for the host with both bits set is the normal, silent case.
+			 */
+			bool hw_enabled = (USBD->EP[ep_idx - 1].USBD_EPCFG &
+					   BIT(NCT_USBD_EPCFG_EPEN)) != 0U;
+			bool rx_armed = (USBD->EP[ep_idx - 1].USBD_EPINTEN &
+					 BIT(NCT_USBD_EPINTEN_RXPKIEN)) != 0U;
+
+			if (!hw_enabled) {
+				LOG_WRN("EP 0x%02x OUT: busy but EPCFG.EPEN is OFF, HW disabled",
+					ep);
+			} else if (!rx_armed) {
+				LOG_WRN("EP 0x%02x OUT: busy but RXPKIEN not armed, RX stuck", ep);
+			} else {
+				uint32_t datcnt = USBD->EP[ep_idx - 1].USBD_EPDATCNT & 0xFFFFul;
+
+				if (datcnt != 0U) {
+					/*
+					 * Known-bad signature: armed and waiting, yet stale bytes
+					 * sit in the FIFO and no completion ever drains them. Try
+					 * to salvage into a queued buffer now; if none is queued
+					 * yet, leave the bytes in the FIFO (host keeps seeing NAK)
+					 * instead of flushing, so the OUT-arm check at the top of
+					 * this function can still hand them to the next buffer
+					 * that gets queued. Flushing here would silently drop
+					 * data the host already delivered.
+					 */
+					//LOG_WRN("EP 0x%02x OUT: busy with stale EPDATCNT=%u, forcing recovery", ep, datcnt);
+					udc_nct_resume_pending_out(dev, ep);
+					udc_ep_set_busy(dev, ep, false);
+				}
 			}
 		}
 		return 0;
@@ -757,6 +798,30 @@ static int udc_nct_kick_ep_sync(const struct device *dev, struct udc_ep_config *
 
 	k_spin_unlock(&priv->state_lock, key);
 	return err;
+}
+
+/* On-demand snapshot for callers above the driver to dump HW/SW state at the moment a failure is confirmed. */
+void udc_nct_debug_dump_ep(uint8_t ep_addr)
+{
+	const struct device *dev = nct_udc_device_get();
+	struct udc_ep_config *cfg = udc_get_ep_cfg(dev, ep_addr);
+	uint8_t ep_idx = USB_EP_GET_IDX(ep_addr);
+
+	if (cfg == NULL || ep_idx == 0U || ep_idx >= NUM_OF_EP_MAX) {
+		LOG_ERR("debug_dump_ep 0x%02x: no ep_cfg / invalid idx", ep_addr);
+		return;
+	}
+
+	LOG_ERR("debug_dump ep 0x%02x: enabled=%u halted=%u busy=%u EPCFG=0x%08x EPINTEN=0x%08x "
+		"EPINTSTS=0x%08x EPDATCNT=0x%08x GINTSTS=0x%08x GINTEN=0x%08x",
+		ep_addr, (uint32_t)cfg->stat.enabled, (uint32_t)cfg->stat.halted,
+		(uint32_t)udc_ep_is_busy(dev, ep_addr),
+		(uint32_t)USBD->EP[ep_idx - 1].USBD_EPCFG,
+		(uint32_t)USBD->EP[ep_idx - 1].USBD_EPINTEN,
+		(uint32_t)USBD->EP[ep_idx - 1].USBD_EPINTSTS,
+		(uint32_t)USBD->EP[ep_idx - 1].USBD_EPDATCNT,
+		(uint32_t)USBD->USBD_GINTSTS,
+		(uint32_t)USBD->USBD_GINTEN);
 }
 
 static int usbd_ctrl_feed_dout(const struct device *dev, const size_t length)
@@ -2277,7 +2342,7 @@ static int udc_nct_enable(const struct device *dev)
 						  BIT(NCT_USBD_BUSINTEN_RSTIEN) |
 						  BIT(NCT_USBD_BUSINTEN_VBUSDETIEN);
 
-	USBD->USBD_GINTEN = BIT(NCT_USBD_GINTEN_USBIEN);
+	USBD->USBD_GINTEN |= BIT(NCT_USBD_GINTEN_USBIEN);
 
 	LOG_INF("enable: GINTEN=0x%08x BUSINTEN=0x%08x OPER=0x%08x PHYCTL=0x%08x",
 		USBD->USBD_GINTEN, USBD->USBD_BUSINTEN, USBD->USBD_OPER, USBD->USBD_PHYCTL);
