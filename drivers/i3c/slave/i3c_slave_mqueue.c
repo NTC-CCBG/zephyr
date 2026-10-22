@@ -21,6 +21,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(i3c_slave_mqueue);
 
+#define I3C_TGT_READ_BACK_TIMEOUT K_MSEC(200)
+
 struct i3c_slave_mqueue_config {
 	char *controller_name;
 	int msg_size;
@@ -109,7 +111,6 @@ int i3c_slave_mqueue_write(const struct device *dev, uint8_t *src, int size)
 	struct i3c_slave_mqueue_config *config = DEV_CFG(dev);
 	struct i3c_slave_mqueue_obj *obj = DEV_DATA(dev);
 	struct i3c_ibi_payload ibi;
-	uint32_t event_en;
 	int ret;
 	uint8_t dynamic_addr;
 
@@ -117,11 +118,6 @@ int i3c_slave_mqueue_write(const struct device *dev, uint8_t *src, int size)
 	ret = i3c_slave_get_dynamic_addr(obj->i3c_controller, &dynamic_addr);
 	if (ret) {
 		return -ENOTCONN;
-	}
-
-	ret = i3c_slave_get_event_enabling(obj->i3c_controller, &event_en);
-	if (ret || !(event_en & I3C_SLAVE_EVENT_SIR)) {
-		return -EACCES;
 	}
 
 	struct i3c_slave_payload read_data;
@@ -143,7 +139,7 @@ int i3c_slave_mqueue_write(const struct device *dev, uint8_t *src, int size)
 
 		ret = i3c_slave_put_read_data(obj->i3c_controller, &read_data, &ibi);
 		if (ret == 0) {
-			target_wait_for_tx_fifo_empty(K_FOREVER);
+			ret = target_wait_for_tx_fifo_empty(I3C_TGT_READ_BACK_TIMEOUT);
 		}
 
 		return ret;
@@ -152,7 +148,7 @@ int i3c_slave_mqueue_write(const struct device *dev, uint8_t *src, int size)
 	/* response without ibi, master should support retry */
 	ret = i3c_slave_put_read_data(obj->i3c_controller, &read_data, NULL);
 	if (ret == 0) {
-		target_wait_for_tx_fifo_empty(K_FOREVER);
+		ret = target_wait_for_tx_fifo_empty(I3C_TGT_READ_BACK_TIMEOUT);
 	}
 
 	return ret;

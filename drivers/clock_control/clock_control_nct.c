@@ -236,7 +236,7 @@ static struct clock_control_driver_api nct_clock_control_api = {
 static int nct_clock_control_init(const struct device *dev)
 {
 	struct cdcg_reg *const priv = (struct cdcg_reg *)(DRV_CONFIG(dev)->base_cdcg);
-	struct freq_multiplier_t *freq_p;
+	struct freq_multiplier_t *freq_p = NULL;
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(freq_multiplier); i++) {
