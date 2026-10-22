@@ -209,6 +209,9 @@ int flm_init(FLM_EngineMode_Enum mode, FLM_FlashSize_Enum flash_size,
     if (mode & BIT(1)) {
         /* abort mode and monitor FLM_CSI# (GPIO54) */
         inst_scfg->DEVALT0[0xC] &= ~BIT(3); /* DEVALTC */
+    } else {
+    	/* monitor SHD_CS# */
+		inst_scfg->DEVALT0[0xC] |= BIT(3); /* DEVALTC */
     }
 
     if (RJ_CallBackfn != NULL) {
