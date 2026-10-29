@@ -17,18 +17,37 @@ typedef enum {
      * BIT1: 1: monitor FLM_CSI# (GPIO54)
      * BIT4~6: determinate SHD, PVT, BAK
      */
+	/* input: FLM_CSI# (GPIO54) from PCH
+	 * output: FLM_CSIO# / SHD_CS# (GPIO44) to PCH */
     FLM_ABORT_MODE_FLM          = 0x22,
 
+    /* SAF environment */
     FLM_ABORT_MODE_FIU_SHD      = 0x20,
     FLM_ABORT_MODE_FIU_PVT      = 0x40,
     FLM_ABORT_MODE_FIU_BAK      = 0x80,
 
+    /* SAF environment */
     FLM_MONITOR_MODE_FIU_SHD    = 0x21,
     FLM_MONITOR_MODE_FIU_PVT    = 0x41,
     FLM_MONITOR_MODE_FIU_BAK    = 0x81,
 } FLM_EngineMode_Enum;
 
 typedef enum {
+	/*
+	 * BIT0~1: DUMBPCK (Dummy Bits Per Clock)/DATBPCK (Data Bits Per Clock)
+	 * 00: One data/dummy bit per clock checked
+	 * 01: Two data/dummy bits per clock checked (Dual mode)
+	 * 10: Four data/dummy bits per clock checked (Quad mode)
+	 * 11: Reserved
+	 *
+	 * BIT4~5: ADBPCK (Address Bits Per Clock)
+	 * 00: One address bit per clock checked
+	 * 01: Two address bits per clock checked (Dual mode)
+	 * 10: Four address bits per clock checked (Quad mode)
+	 * 11: Reserved
+	 *
+	 * BIT7: 1: 4-byte address mode, 0: 3-byte address mode
+	 */
     FLM_SINGLE_3B_MODE = 0x00,
     FLM_DUAL_3B_MODE = 0x01,
     FLM_QUAD_3B_MODE = 0x02,
@@ -129,3 +148,4 @@ void flm_del_allow_list(uint8_t idx);
 #endif
 
 #endif /* _FLM_H_ */
+

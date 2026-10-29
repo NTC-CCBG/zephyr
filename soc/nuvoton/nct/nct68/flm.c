@@ -209,6 +209,9 @@ int flm_init(FLM_EngineMode_Enum mode, FLM_FlashSize_Enum flash_size,
     if (mode & BIT(1)) {
         /* abort mode and monitor FLM_CSI# (GPIO54) */
         inst_scfg->DEVALT0[0xC] &= ~BIT(3); /* DEVALTC */
+    } else {
+    	/* monitor SHD_CS# */
+		inst_scfg->DEVALT0[0xC] |= BIT(3); /* DEVALTC */
     }
 
     if (RJ_CallBackfn != NULL) {
@@ -343,6 +346,31 @@ void flm_irq_handler(void)
 
     FLM->STAT = BIT(NCT_FLM_STAT_RJ_EV) | BIT(NCT_FLM_STAT_SCI_EV) | BIT(NCT_FLM_STAT_TCR_EV);
 }
+
+#if 0
+void flm_cmb_set_reject_opcode(uint8_t opcode, bool enable)
+{
+    uint8_t reg_idx = opcode >> 3;       // opcode / 8
+    uint8_t bit_pos = opcode & 0x07;     // opcode % 8
+
+    if (enable) {
+        FLM->CMB[reg_idx] |= (1 << bit_pos);
+    } else {
+        FLM->CMB[reg_idx] &= ~(1 << bit_pos);
+    }
+}
+
+void flm_cmb_enable(bool enable)
+{
+	if (enable) {
+		FLM->CMBEN = 1;
+	} else {
+		FLM->CMBEN = 0;
+	}
+	FLM->CTL |= BIT(NCT_FLM_CTL_CHANGE);
+	while (!(FLM->CTL & BIT(NCT_FLM_CTL_RDY)));
+}
+#endif
 
 #if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
 static int flm_nct_init(const struct device *dev)
