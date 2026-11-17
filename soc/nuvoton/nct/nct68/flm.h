@@ -1,8 +1,7 @@
 /*
  * flm.h
  *
- *  Created on: 2026年8月31日
- *      Author: WSCHUANG
+ *  Created on: 2026�???1?? *      Author: WSCHUANG
  *
  * Copyright (c) 2026 Nuvoton Technology Corporation.
  */
@@ -18,7 +17,7 @@ typedef enum {
      * BIT4~6: determinate SHD, PVT, BAK
      */
 	/* input: FLM_CSI# (GPIO54) from PCH
-	 * output: FLM_CSIO# / SHD_CS# (GPIO44) to PCH */
+	 * output: FLM_CSIO# / SHD_CS# (GPIO44) to FLASH */
     FLM_ABORT_MODE_FLM          = 0x22,
 
     /* SAF environment */
@@ -106,6 +105,12 @@ int flm_unlock(void);
 int flm_is_lock(void);
 /*
  * return :
+ *       1 : FLM module is enabled
+ *       0 : FLM module is disabled
+ */
+int flm_is_enable(void);
+/*
+ * return :
  *      -1 : FLM is locked, can not enable module
  *       0 : done
  */
@@ -123,7 +128,10 @@ int flm_module_disable(void);
  */
 int flm_init(FLM_EngineMode_Enum mode, FLM_FlashSize_Enum flash_size, ptrFLM_RJ_Callback rjfn);
 
-/* idx: 0 ~ 7 */
+/* Get flash size set by flm_init */
+FLM_FlashSize_Enum flm_get_flash_size(void);
+
+/* idx: 0 ~ 7, size == 0 makes the range empty */
 void flm_set_address_range(uint8_t idx, uint32_t start_addr, uint32_t size);
 
 /*
@@ -134,12 +142,23 @@ void flm_set_address_range(uint8_t idx, uint32_t start_addr, uint32_t size);
  */
 int flm_add_qualifier_to_allow_list(uint8_t cmd,uint8_t byte_cnt,uint8_t value,uint8_t mask);
 
+/* buf: 128 bytes, 32 elements of 4 bytes {cmd, range_mask, flash_mode, reserved},
+ * element n at offset 4n, n = HW CMD register index.
+ * get: read from HW. Reserved / disabled elements are 0.
+ */
+void flm_get_allow_list(volatile uint8_t *buf);
+/* set: cmd == 0 clears the HW entry. An element with invalid flash_mode is not written
+ * (HW keeps its previous value). Invalid/reserved elements are cleared to 0 in buf.
+ */
+void flm_set_allow_list(volatile uint8_t *buf);
+
 /*
+ * Legacy: add one entry into a free slot.
  * addr_range_idx_mask: bit0~7 means idx 0~7
  * dummy_bytes: dummy bytes counts after address, it should be 0~3
- * return: -1: not success, >=0: success
+ * return: -1: not success, >=0: success (index)
  */
-int flm_add_range_to_allow_list(uint8_t cmd, uint8_t addr_range_mask, FLM_FlashMode_Enum mode, uint8_t dummy_bytes);
+int flm_add_range_to_allow_list(uint8_t cmd, uint8_t addr_range_mask, FLM_FlashMode_Enum flash_mode, uint8_t dummy_bytes);
 
 void flm_del_allow_list(uint8_t idx);
 
