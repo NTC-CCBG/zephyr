@@ -62,7 +62,9 @@ struct rtc_nct_time {
 	uint8_t am_pm;		/* Only Time Scale select 12-hr used */
 };
 
-struct miwu_callback rtc_miwu_cb;
+#ifdef CONFIG_RTC_ALARM
+static struct miwu_callback rtc_miwu_cb;
+#endif /* CONFIG_RTC_ALARM */
 
 static int rtc_nct_set_time(const struct device *dev, const struct rtc_time *timeptr)
 {
@@ -526,17 +528,15 @@ static DEVICE_API(rtc, rtc_nct_driver_api) = {
 #endif /* CONFIG_RTC_ALARM */
 };
 
+#ifdef CONFIG_RTC_ALARM
 static void rtc_nct_isr(const struct device *dev, struct nct_wui *wui)
 {
 	const struct rtc_nct_config *cfg = dev->config;
 	const struct device *c2h_dev = cfg->c2h_dev;
-
-#ifdef CONFIG_RTC_ALARM
 	struct rtc_nct_data *const data = dev->data;
-#endif
+
 	ARG_UNUSED(wui);
 
-#ifdef CONFIG_RTC_ALARM
 	if (rtc_read_offset(c2h_dev, RTC_ALMFLG) & RTC_ALMFLG_AF_Msk) {
 		rtc_alarm_callback callback;
 		void *user_data;
@@ -552,8 +552,8 @@ static void rtc_nct_isr(const struct device *dev, struct nct_wui *wui)
 			callback(dev, 0, user_data);
 		}
 	}
-#endif
 }
+#endif /* CONFIG_RTC_ALARM */
 
 static int rtc_nct_init(const struct device *dev)
 {
@@ -595,6 +595,7 @@ static int rtc_nct_init(const struct device *dev)
 		return -EINVAL;
 	}
 
+#ifdef CONFIG_RTC_ALARM
 	/* Initialize a miwu device input and its callback function */
 	nct_miwu_init_dev_callback(&rtc_miwu_cb, &cfg->rtcwk, rtc_nct_isr,
 			dev);
@@ -608,6 +609,7 @@ static int rtc_nct_init(const struct device *dev)
 			NCT_MIWU_MODE_EDGE, NCT_MIWU_TRIG_HIGH);
 
 	nct_miwu_irq_enable(&cfg->rtcwk);
+#endif /* CONFIG_RTC_ALARM */
 
 	return 0;
 }
