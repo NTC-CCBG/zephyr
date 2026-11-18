@@ -11,6 +11,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/dt-bindings/flash_controller/nct_qspi.h>
+#include <zephyr/sys/barrier.h>
 #include <soc.h>
 
 #include "spi_nor.h"
@@ -41,23 +42,51 @@ struct nct_qspi_spim_config {
 	uint32_t clk_cfg;
 };
 
-#define SPIM_CTL0_DIRECT(cmd)	(((cmd) << 24) | \
-								((NCT_SPIM_CTL0_OPMODE_DMM) << 22) | \
-								BIT(NCT_SPIM_CTL0_CIPHOFF));
+#define SPIM_CTL0_DIRECT(cmd)                                                                      \
+	(((cmd) << 24) | ((NCT_SPIM_CTL0_OPMODE_DMM) << 22) | BIT(NCT_SPIM_CTL0_CIPHOFF))
 
-#define SPIM_CTL0_NORMAL(bit_mode, output, bitwidth, len) \
-										((NCT_SPIM_CTL0_OPMODE_NORMAL_IO << 22) | \
-										((bit_mode) << 20) | \
-										((output) << NCT_SPIM_CTL0_QDIODIR) | \
-										(((len) - 1) << 13) | \
-										((bitwidth-1) << 8) | \
-										BIT(NCT_SPIM_CTL0_CIPHOFF));
+#define SPIM_CTL0_NORMAL(bit_mode, output, bitwidth, len)                                          \
+	((NCT_SPIM_CTL0_OPMODE_NORMAL_IO << 22) | ((bit_mode) << 20) |                             \
+	 ((output) << NCT_SPIM_CTL0_QDIODIR) | (((len) - 1) << 13) | (((bitwidth) - 1) << 8) |     \
+	 BIT(NCT_SPIM_CTL0_CIPHOFF))
+
+/*
+ * The SPIM registers sit on the system bus while XIP fetches go through the
+ * code bus, so a CTL0 write may still be in flight when the next flash
+ * fetch is issued. Read it back and fence before touching XIP flash again.
+ */
+RAMFUNC static inline void qspi_nct_spim_set_ctl0_sync(struct spim_reg *const inst,
+						       uint32_t ctl0)
+{
+	inst->SPIM_CTL0 = ctl0;
+	(void)inst->SPIM_CTL0;
+	barrier_dsync_fence_full();
+	barrier_isync_fence_full();
+}
+
+/*
+ * A DMM (XIP) cache-line fill or instruction prefetch issued just before
+ * entering a RAMFUNC can still be running on the SPI bus. Changing CTL0 in
+ * the middle of it hangs the SPIM, so let it drain first. There is no DMM
+ * busy flag, and k_busy_wait() lives in XIP flash, so spin in RAM instead.
+ * NCT_SPIM_DMM_IDLE_US covers a single-bit 0x03 line fill with margin.
+ */
+#define NCT_SPIM_DMM_IDLE_US 20U
+/* each arch_nop() loop iteration takes at least 2 core cycles */
+#define NCT_SPIM_DMM_IDLE_LOOPS                                                                    \
+	((CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC / USEC_PER_SEC) * NCT_SPIM_DMM_IDLE_US / 2U)
+
+RAMFUNC static inline void qspi_nct_spim_wait_dmm_idle(void)
+{
+	for (uint32_t i = 0; i < NCT_SPIM_DMM_IDLE_LOOPS; i++) {
+		arch_nop();
+	}
+}
 
 /* NCT SPI Normal functions */
-RAMFUNC static inline void qspi_nct_normal_cs_level(const struct device *dev, uint8_t sw_cs, bool level)
+RAMFUNC static inline void qspi_nct_normal_cs_level(struct spim_reg *const inst, uint8_t sw_cs,
+						    bool level)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
-
 	/* Set chip select to high/low level */
 	if (level) {
 		inst->SPIM_CTL1 |= BIT(NCT_SPIM_CTL1_SS);
@@ -66,26 +95,22 @@ RAMFUNC static inline void qspi_nct_normal_cs_level(const struct device *dev, ui
 	}
 }
 
-RAMFUNC static inline void qspi_nct_spim_cache_on(const struct device *dev)
+RAMFUNC static inline void qspi_nct_spim_cache_on(struct spim_reg *const inst)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
-
 	inst->SPIM_CTL1 &= ~BIT(NCT_SPIM_CTL1_CACHEOFF);
 }
 
-RAMFUNC static inline void qspi_nct_spim_cache_invalid(const struct device *dev)
+RAMFUNC static inline void qspi_nct_spim_cache_invalid(struct spim_reg *const inst)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
-
 	inst->SPIM_CTL1 |= BIT(NCT_SPIM_CTL1_CDINVAL);
 	while (inst->SPIM_CTL1 & BIT(NCT_SPIM_CTL1_CDINVAL)) {
 		continue;
 	}
 }
 
-RAMFUNC static void qspi_nct_normal_write_bytes(const struct device *dev, uint8_t* data, size_t len)
+RAMFUNC static void qspi_nct_normal_write_bytes(struct spim_reg *const inst, uint8_t *data,
+						size_t len)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
 	uint8_t tx_len;
 
 	while(len)
@@ -110,10 +135,8 @@ RAMFUNC static void qspi_nct_normal_write_bytes(const struct device *dev, uint8_
 	}
 }
 
-RAMFUNC static void qspi_nct_normal_write_byte(const struct device *dev, uint8_t data)
+RAMFUNC static void qspi_nct_normal_write_byte(struct spim_reg *const inst, uint8_t data)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
-
 	inst->SPIM_CTL0 = SPIM_CTL0_NORMAL(NCT_SPIM_CTL0_BITMODE_STANDARD, 1, 8, 1);
 
 	inst->SPIM_TX[0] = data;
@@ -127,9 +150,9 @@ RAMFUNC static void qspi_nct_normal_write_byte(const struct device *dev, uint8_t
 	}
 }
 
-RAMFUNC static void qspi_nct_normal_read_bytes(const struct device *dev, uint8_t *data, size_t len)
+RAMFUNC static void qspi_nct_normal_read_bytes(struct spim_reg *const inst, uint8_t *data,
+					       size_t len)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
 	uint8_t rx_len;
 
 	while(len)
@@ -154,12 +177,13 @@ RAMFUNC static void qspi_nct_normal_read_bytes(const struct device *dev, uint8_t
 	}
 }
 
-RAMFUNC static inline void qspi_nct_config_normal_mode(const struct device *dev,
+RAMFUNC static inline void qspi_nct_config_normal_mode(struct spim_reg *const inst,
 					     const struct nct_qspi_cfg *qspi_cfg)
 {
-	struct spim_reg *const inst = HAL_INSTANCE(dev);
+	ARG_UNUSED(qspi_cfg);
 
-	inst->SPIM_CTL0 = SPIM_CTL0_NORMAL(NCT_SPIM_CTL0_BITMODE_STANDARD, 0, 8, 0);
+	/* DWIDTH/BURSTNUM are re-programmed per transfer; just leave DMM here */
+	inst->SPIM_CTL0 = SPIM_CTL0_NORMAL(NCT_SPIM_CTL0_BITMODE_STANDARD, 0, 8, 1);
 }
 
 RAMFUNC static inline void qspi_nct_config_dmm_mode(const struct device *dev,
@@ -167,18 +191,20 @@ RAMFUNC static inline void qspi_nct_config_dmm_mode(const struct device *dev,
 {
 	struct spim_reg *const inst = HAL_INSTANCE(dev);
 
+	qspi_nct_spim_wait_dmm_idle();
+
 	switch (qspi_cfg->rd_mode) {
 		case NCT_RD_MODE_NORMAL:
-			inst->SPIM_CTL0 = SPIM_CTL0_DIRECT(SPI_NOR_CMD_READ);
+			qspi_nct_spim_set_ctl0_sync(inst, SPIM_CTL0_DIRECT(SPI_NOR_CMD_READ));
 			break;
 		case NCT_RD_MODE_FAST:
-			inst->SPIM_CTL0 = SPIM_CTL0_DIRECT(SPI_NOR_CMD_READ_FAST);
+			qspi_nct_spim_set_ctl0_sync(inst, SPIM_CTL0_DIRECT(SPI_NOR_CMD_READ_FAST));
 			break;
 		case NCT_RD_MODE_FAST_DUAL:
-			inst->SPIM_CTL0 = SPIM_CTL0_DIRECT(SPI_NOR_CMD_2READ);
+			qspi_nct_spim_set_ctl0_sync(inst, SPIM_CTL0_DIRECT(SPI_NOR_CMD_2READ));
 			break;
 		case NCT_RD_MODE_QUAD:
-			inst->SPIM_CTL0 = SPIM_CTL0_DIRECT(SPI_NOR_CMD_4READ);
+			qspi_nct_spim_set_ctl0_sync(inst, SPIM_CTL0_DIRECT(SPI_NOR_CMD_4READ));
 			break;
 		default:
 			LOG_ERR("un-support rd mode:%d", qspi_cfg->rd_mode);
@@ -193,18 +219,18 @@ RAMFUNC static inline void qspi_nct_spim_set_operation(const struct device *dev,
 	}
 }
 
-RAMFUNC static void qspi_nct_wait_flash_ready(const struct device *dev)
+RAMFUNC static void qspi_nct_wait_flash_ready(struct spim_reg *const inst)
 {
 	uint8_t reg1_sts;
 
 	/* check busy bit in status register 1 */
 	do {
-		qspi_nct_normal_cs_level(dev, 0, false);
+		qspi_nct_normal_cs_level(inst, 0, false);
 
-		qspi_nct_normal_write_byte(dev, 0x05);
-		qspi_nct_normal_read_bytes(dev, &reg1_sts, 1);
+		qspi_nct_normal_write_byte(inst, 0x05);
+		qspi_nct_normal_read_bytes(inst, &reg1_sts, 1);
 
-		qspi_nct_normal_cs_level(dev, 0, true);
+		qspi_nct_normal_cs_level(inst, 0, true);
 	} while (reg1_sts & 0x01);
 }
 
@@ -221,51 +247,56 @@ RAMFUNC static int qspi_nct_spim_normal_transceive(const struct device *dev, str
 		return -EPERM;
 	}
 
+	if ((((flags & NCT_TRANSCEIVE_ACCESS_WRITE) != 0) && (cfg->tx_buf == NULL)) ||
+	    (((flags & NCT_TRANSCEIVE_ACCESS_READ) != 0) && (cfg->rx_buf == NULL))) {
+		return -EINVAL;
+	}
+
+	/*
+	 * Once SPIM leaves DMM mode, the memory-mapped flash (XIP code and
+	 * rodata such as 'dev') must not be accessed until DMM is restored.
+	 * Only use 'inst', 'cfg' and RAM data inside this window.
+	 */
+
+	qspi_nct_spim_wait_dmm_idle();
+
 	/* save ctrl0 setting */
 	ctrl_value = inst->SPIM_CTL0;
 
 	/* Config normal mode */
-    qspi_nct_config_normal_mode(dev, data->cur_cfg);
+	qspi_nct_config_normal_mode(inst, data->cur_cfg);
 
 	/* Assert chip select */
-	qspi_nct_normal_cs_level(dev, 0, false);
+	qspi_nct_normal_cs_level(inst, 0, false);
 
 	/* Transmit op-code first */
-	qspi_nct_normal_write_byte(dev, cfg->opcode);
+	qspi_nct_normal_write_byte(inst, cfg->opcode);
 
 	if ((flags & NCT_TRANSCEIVE_ACCESS_ADDR) != 0) {
-		qspi_nct_normal_write_bytes(dev, &cfg->addr.u8[1],	3);
+		qspi_nct_normal_write_bytes(inst, &cfg->addr.u8[1], 3);
 	}
 
 	if ((flags & NCT_TRANSCEIVE_ACCESS_WRITE) != 0) {
-		if (cfg->tx_buf == NULL) {
-			return -EINVAL;
-		}
-
-		qspi_nct_normal_write_bytes(dev, cfg->tx_buf, cfg->tx_count);
+		qspi_nct_normal_write_bytes(inst, cfg->tx_buf, cfg->tx_count);
 	}
 
 	if ((flags & NCT_TRANSCEIVE_ACCESS_READ) != 0) {
-		if (cfg->rx_buf == NULL) {
-			return -EINVAL;
-		}
-
-		qspi_nct_normal_read_bytes(dev, cfg->rx_buf, cfg->rx_count);
+		qspi_nct_normal_read_bytes(inst, cfg->rx_buf, cfg->rx_count);
 	}
 
 	/* De-assert chip select */
-	qspi_nct_normal_cs_level(dev, 0, true);
+	qspi_nct_normal_cs_level(inst, 0, true);
 
 	/* Wait flash ready during flash write operation. */
 	if(((flags & NCT_TRANSCEIVE_ACCESS_READ) == 0) && (cfg->opcode != SPI_NOR_CMD_WREN)) {
-		qspi_nct_wait_flash_ready(dev);
+		qspi_nct_wait_flash_ready(inst);
 	}
 
 	/* cache invalid after normal I/O mode */
-	qspi_nct_spim_cache_invalid(dev);
+	qspi_nct_spim_cache_invalid(inst);
 
-	/* restore ctrl0 setting */
-	inst->SPIM_CTL0 = ctrl_value;
+	/* restore ctrl0 setting (back to DMM) before returning to XIP code */
+	qspi_nct_spim_set_ctl0_sync(inst, ctrl_value);
 
 	return 0;
 }
@@ -350,7 +381,7 @@ RAMFUNC static int qspi_nct_spim_init(const struct device *dev)
 	k_sem_init(&data->lock_sem, 1, 1);
 
 	/* enable cache */
-	qspi_nct_spim_cache_on(dev);
+	qspi_nct_spim_cache_on(HAL_INSTANCE(dev));
 
 	return 0;
 }

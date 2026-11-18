@@ -366,24 +366,24 @@ RAMFUNC static int flash_nct_nor_erase(const struct device *dev, off_t addr, siz
 		flash_nct_transceive_cmd_only(dev, SPI_NOR_CMD_WREN);
 		/* Send chip erase command */
 		flash_nct_transceive_cmd_only(dev, SPI_NOR_CMD_CE);
-		return flash_nct_nor_wait_until_ready(dev);
-	}
-
-	while (size > 0) {
-		flash_nct_transceive_cmd_only(dev, SPI_NOR_CMD_WREN);
-		/* Send page/block erase command with addr */
-		if ((size >= BLOCK_64K_SIZE) && SPI_NOR_IS_64K_ALIGNED(addr)) {
-			flash_nct_transceive_cmd_by_addr(dev, SPI_NOR_CMD_BE, addr);
-			addr += BLOCK_64K_SIZE;
-			size -= BLOCK_64K_SIZE;
-		} else {
-			flash_nct_transceive_cmd_by_addr(dev, SPI_NOR_CMD_SE, addr);
-			addr += BLOCK_4K_SIZE;
-			size -= BLOCK_4K_SIZE;
-		}
 		ret = flash_nct_nor_wait_until_ready(dev);
-		if (ret != 0) {
-			break;
+	} else {
+		while (size > 0) {
+			flash_nct_transceive_cmd_only(dev, SPI_NOR_CMD_WREN);
+			/* Send page/block erase command with addr */
+			if ((size >= BLOCK_64K_SIZE) && SPI_NOR_IS_64K_ALIGNED(addr)) {
+				flash_nct_transceive_cmd_by_addr(dev, SPI_NOR_CMD_BE, addr);
+				addr += BLOCK_64K_SIZE;
+				size -= BLOCK_64K_SIZE;
+			} else {
+				flash_nct_transceive_cmd_by_addr(dev, SPI_NOR_CMD_SE, addr);
+				addr += BLOCK_4K_SIZE;
+				size -= BLOCK_4K_SIZE;
+			}
+			ret = flash_nct_nor_wait_until_ready(dev);
+			if (ret != 0) {
+				break;
+			}
 		}
 	}
 
@@ -718,8 +718,8 @@ static struct flash_nct_nor_config flash_nct_nor_config_##n = {		\
 	IF_ENABLED(CONFIG_FLASH_PAGE_LAYOUT, (					\
 		.layout = {							\
 			.pages_count = DT_INST_PROP(n, size) /			\
-				      (8 * SPI_NOR_PAGE_SIZE),			\
-			.pages_size  = SPI_NOR_PAGE_SIZE,			\
+				      (8 * SPI_NOR_SECTOR_SIZE),		\
+			.pages_size  = SPI_NOR_SECTOR_SIZE,			\
 		},))								\
 };										\
 static struct flash_nct_nor_data flash_nct_nor_data_##n;			\
