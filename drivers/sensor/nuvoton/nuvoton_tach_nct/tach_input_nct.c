@@ -101,23 +101,24 @@ static int tach_input_nct_sample_fetch(const struct device *dev,
 
 	key = k_spin_lock(&mft_data->lock);
 
-	/* Underflow: counter expired, no edge on current pin */
-	if (IS_BIT_SET(inst->TECTRL, NCT_TECTRL_TCPND)) {
-		mft_switch_pin(inst, mft_data, config->pin_select, config->sample_clk);
-		mft_data->current_pin = config->pin_select;
-		mft_data->current_sample_clk = config->sample_clk;
-		k_spin_unlock(&mft_data->lock, key);
-		data->capture = 0; /* fan stopped */
-		return 0;
-	}
-
-	/* Wrong pin active: switch and ask caller to retry */
+	/*
+	 * Wrong pin active: switch and ask caller to retry. This must be checked
+	 * before the underflow flag, which may belong to the previous pin.
+	 */
 	if (mft_data->current_pin != config->pin_select) {
 		mft_switch_pin(inst, mft_data, config->pin_select, config->sample_clk);
 		mft_data->current_pin = config->pin_select;
 		mft_data->current_sample_clk = config->sample_clk;
 		k_spin_unlock(&mft_data->lock, key);
 		return -EBUSY;
+	}
+
+	/* Underflow: counter expired, no edge on our pin */
+	if (IS_BIT_SET(inst->TECTRL, NCT_TECTRL_TCPND)) {
+		mft_switch_pin(inst, mft_data, config->pin_select, config->sample_clk);
+		k_spin_unlock(&mft_data->lock, key);
+		data->capture = 0; /* fan stopped */
+		return 0;
 	}
 
 	/* Capture ready: edge received on our pin */
