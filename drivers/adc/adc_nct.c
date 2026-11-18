@@ -457,7 +457,7 @@ static int adc_nct_init(const struct device *dev)
 		irq_enable(DT_INST_IRQN(n));					\
 	}									\
 										\
-	static const struct adc_driver_api adc_nct_driver_api_##n = {		\
+	static DEVICE_API(adc, adc_nct_driver_api_##n) = {		\
 		.channel_setup = adc_nct_channel_setup,			\
 		.read = adc_nct_read,						\
 		.ref_internal = DT_INST_PROP(n, vref_mv),			\

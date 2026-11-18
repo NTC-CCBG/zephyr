@@ -185,7 +185,7 @@ static int tach_input_nct_init(const struct device *dev)
 	return 0;
 }
 
-static const struct sensor_driver_api tach_input_nct_driver_api = {
+static DEVICE_API(sensor, tach_input_nct_driver_api) = {
 	.sample_fetch = tach_input_nct_sample_fetch,
 	.channel_get  = tach_input_nct_channel_get,
 };

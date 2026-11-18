@@ -302,7 +302,7 @@ static int counter_nct_itim32_init(const struct device *dev)
 	return 0;
 }
 
-static const struct counter_driver_api counter_nct_itim32_driver_api = {
+static DEVICE_API(counter, counter_nct_itim32_driver_api) = {
 	.start = counter_nct_itim32_start,
 	.stop = counter_nct_itim32_stop,
 	.get_value = counter_nct_itim32_get_value,

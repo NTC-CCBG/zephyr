@@ -396,7 +396,7 @@ static int spi_nct_spip_init(const struct device *dev)
 	return 0;
 }
 
-static struct spi_driver_api spi_nct_spip_api = {
+static DEVICE_API(spi, spi_nct_spip_api) = {
 	.transceive = spi_nct_spip_transceive,
 	.release = spi_nct_spip_release,
 };

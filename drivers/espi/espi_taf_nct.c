@@ -461,7 +461,7 @@ static int espi_taf_nct_init(const struct device *dev)
 	return 0;
 }
 
-static const struct espi_saf_driver_api espi_taf_nct_driver_api = {
+static DEVICE_API(espi_saf, espi_taf_nct_driver_api) = {
 	.config = espi_taf_nct_configure,
 	.set_protection_regions = espi_taf_nct_set_pr,
 	.activate = espi_taf_nct_activate,

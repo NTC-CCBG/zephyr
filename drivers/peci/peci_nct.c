@@ -228,7 +228,7 @@ static void peci_nct_isr(const struct device *dev)
 	k_sem_give(&data->trans_sync_sem);
 }
 
-static const struct peci_driver_api peci_nct_driver_api = {
+static DEVICE_API(peci, peci_nct_driver_api) = {
 	.config = peci_nct_configure,
 	.enable = peci_nct_enable,
 	.disable = peci_nct_disable,

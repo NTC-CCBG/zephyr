@@ -899,7 +899,7 @@ static int i2c_nct_transfer(const struct device *dev, struct i2c_msg *msgs,
 	return ret;
 }
 
-static const struct i2c_driver_api i2c_nct_driver_api = {
+static DEVICE_API(i2c, i2c_nct_driver_api) = {
 	.configure = i2c_nct_configure,
 	.transfer = i2c_nct_transfer,
 	.target_register = i2c_nct_target_register,

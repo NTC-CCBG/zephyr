@@ -91,7 +91,7 @@ static int bbram_nct_write(const struct device *dev, size_t offset, size_t size,
 	return 0;
 }
 
-static const struct bbram_driver_api bbram_nct_driver_api = {
+static DEVICE_API(bbram, bbram_nct_driver_api) = {
 	.check_invalid = bbram_nct_check_invalid,
 	.check_standby_power = bbram_nct_check_standby_power,
 	.check_power = bbram_nct_check_power,

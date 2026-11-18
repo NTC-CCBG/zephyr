@@ -356,7 +356,7 @@ static int gpio_nct_manage_callback(const struct device *dev,
 }
 
 /* GPIO driver registration */
-static const struct gpio_driver_api gpio_nct_driver = {
+static DEVICE_API(gpio, gpio_nct_driver) = {
 	.pin_configure = gpio_nct_config,
 #ifdef CONFIG_GPIO_GET_CONFIG
 	.pin_get_config = gpio_nct_pin_get_config,

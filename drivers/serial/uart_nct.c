@@ -286,7 +286,7 @@ static int uart_nct_err_check(const struct device *dev)
 }
 
 /* UART driver registration */
-static const struct uart_driver_api uart_nct_driver_api = {
+static DEVICE_API(uart, uart_nct_driver_api) = {
 	.poll_in = uart_nct_poll_in,
 	.poll_out = uart_nct_poll_out,
 	.err_check = uart_nct_err_check,

@@ -513,7 +513,7 @@ static int rtc_nct_alarm_set_callback(const struct device *dev, uint16_t id,
 
 #endif /* CONFIG_RTC_ALARM */
 
-static const struct rtc_driver_api rtc_nct_driver_api = {
+static DEVICE_API(rtc, rtc_nct_driver_api) = {
 	.set_time = rtc_nct_set_time,
 	.get_time = rtc_nct_get_time,
 #ifdef CONFIG_RTC_ALARM

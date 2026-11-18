@@ -4483,7 +4483,7 @@ static int nct_i3c_target_unregister(const struct device *dev, struct i3c_target
 	return 0;
 }
 
-const struct i3c_driver_api nct_i3c_driver_api = {
+static DEVICE_API(i3c, nct_i3c_driver_api) = {
 	.i2c_api.configure = nct_i3c_i2c_api_configure,
 	.i2c_api.transfer = nct_i3c_i2c_api_transfer,
 	.i2c_api.recover_bus = nct_i3c_recover_bus,

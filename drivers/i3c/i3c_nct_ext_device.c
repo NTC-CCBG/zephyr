@@ -151,7 +151,7 @@ int nct_i3c_ext_dev_target_tx_write(const struct device *dev, uint8_t *buf, uint
 	return -ENOTSUP;
 }
 
-static const struct i3c_driver_api i3c_target_driver_api = {
+static DEVICE_API(i3c, i3c_target_driver_api) = {
 	.i2c_api = {
 		.transfer = nct_i3c_i2c_ext_dev_api_transfer,	/* Transfer data to/from I2C device */
 	},
