@@ -6,7 +6,10 @@
 config RTC_NCT
 	bool "Nuvoton NCT RTC driver"
 	depends on DT_HAS_NUVOTON_NCT_RTC_ENABLED
+	depends on DT_HAS_NUVOTON_NCT_C2H_ENABLED
+	select C2H_NCT
 	help
 	  This option enables the RTC driver for Nuvoton NCT family of
-	  processors.
+	  processors. The RTC accesses registers through C2H, so the C2H
+	  devicetree node must be enabled.
 	  Say y if you wish to enable NCT RTC.

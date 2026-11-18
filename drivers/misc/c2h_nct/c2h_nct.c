@@ -22,6 +22,8 @@
 #include <zephyr/kernel.h>
 #include <soc.h>
 
+#include "c2h_nct.h"
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(c2h_nct, CONFIG_LOG_DEFAULT_LEVEL);
 

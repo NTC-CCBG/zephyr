@@ -12,9 +12,10 @@
 #include <zephyr/drivers/espi.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/clock_control.h>
-#include <zephyr/drivers/misc/c2h_nct/c2h_nct.h>
 #include <zephyr/kernel.h>
 #include <soc.h>
+
+#include "../misc/c2h_nct/c2h_nct.h"
 #include "rtc_utils.h"
 
 #include <zephyr/logging/log.h>
