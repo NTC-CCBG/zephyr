@@ -151,14 +151,6 @@ static void i2c_nct_DMA_lastbyte(const struct device *dev)
 			 BIT(NCT_DMA_CTRL_LAST_PEC);
 }
 
-static uint16_t i2c_nct_get_dma_cnt(const struct device *dev)
-{
-	struct i2c_reg *const inst = I2C_INSTANCE(dev);
-
-	return (uint16_t)(((uint16_t)(inst->DATA_CNT1) << 8) + (uint16_t)(inst->DATA_CNT2));
-
-}
-
 void Set_Cumulative_ClockLow_Timeout(const struct device *dev, uint8_t interval_ms)
 {
 	struct i2c_reg *const inst = I2C_INSTANCE(dev);
@@ -485,11 +477,18 @@ static void i2c_nct_target_isr(const struct device *dev)
 {
 	struct i2c_reg *const inst = I2C_INSTANCE(dev);
 	struct i2c_nct_data *const data = dev->data;
-	const struct i2c_target_callbacks *target_cb =
-		data->target_cfg->callbacks;
-	uint16_t len;
-	uint8_t overflow_data;
+	struct i2c_target_config *const target_cfg = data->target_cfg;
+	const struct i2c_target_callbacks *target_cb;
+	uint8_t val;
 
+	if (target_cfg == NULL) {
+		/* No registered target, just clear target related status */
+		inst->SMBnST = BIT(NCT_SMBnST_NMATCH) | BIT(NCT_SMBnST_SLVSTP) |
+			       BIT(NCT_SMBnST_NEGACK) | BIT(NCT_SMBnST_BER);
+		data->target_oper_state = I2C_NCT_OPER_STA_IDLE;
+		return;
+	}
+	target_cb = target_cfg->callbacks;
 
 #if (CONFIG_TARGET_HW_TIMEOUT_EN == 'Y')
 	/* --------------------------------------------- */
@@ -509,11 +508,9 @@ static void i2c_nct_target_isr(const struct device *dev)
 	}
 #endif
 
-	/* --------------------------------------------- */
-	/* NACK occurred                                 */
-	/* --------------------------------------------- */
-	if (inst->SMBnST & BIT(NCT_SMBnST_NEGACK)) {
-		inst->SMBnST = BIT(NCT_SMBnST_NEGACK);
+	/* Target mode is single-byte driven, clear any stale DMA status */
+	if (inst->DMA_CTRL & BIT(NCT_DMA_CTRL_DMA_IRQ)) {
+		inst->DMA_CTRL = BIT(NCT_DMA_CTRL_DMA_INT_CLR);
 	}
 
 	/* --------------------------------------------- */
@@ -523,113 +520,99 @@ static void i2c_nct_target_isr(const struct device *dev)
 		if (data->target_oper_state != I2C_NCT_OPER_STA_QUICK) {
 			LOG_ERR("target: bus error");
 		}
-		data->target_oper_state = I2C_NCT_OPER_STA_START;
 		/* clear BER */
 		inst->SMBnST = BIT(NCT_SMBnST_BER);
+
+		if ((data->target_oper_state != I2C_NCT_OPER_STA_START) &&
+		    (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) &&
+		    (target_cb != NULL) && (target_cb->stop != NULL)) {
+			target_cb->stop(target_cfg);
+		}
+		data->target_oper_state = I2C_NCT_OPER_STA_START;
 		i2c_nct_reset_module(dev);
-	}
-
-	/* --------------------------------------------- */
-	/* DMA IRQ occurred                              */
-	/* --------------------------------------------- */
-	if (inst->DMA_CTRL & BIT(NCT_DMA_CTRL_DMA_IRQ)) {
-		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
-			/* if DMA overflow, send NACK to Controller, and next IRQ is SDAST alert */
-			i2c_nct_nack(dev);
-		}
-		/* clear DMA flag */
-		inst->DMA_CTRL = BIT(NCT_DMA_CTRL_DMA_INT_CLR);
-	}
-
-	/* --------------------------------------------- */
-	/* SDA status is set - transmit or receive       */
-	/* --------------------------------------------- */
-	if (inst->SMBnST & BIT(NCT_SMBnST_SDAST)) {
-		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
-			/* Over Flow */
-			overflow_data = inst->SMBnSDA;
-
-			len = 0;
-			while (len < i2c_nct_get_dma_cnt(dev)) {
-				if (target_cb->write_received(data->target_cfg, data->rx_buf[len]))
-					break;
-
-				len++;
-			}
-			target_cb->write_received(data->target_cfg, overflow_data);
-			data->target_oper_state = I2C_NCT_OPER_STA_START;
-		} else {
-			/* No Enough DMA data to send */
-			inst->SMBnSDA = 0xFF;
-		}
+		return;
 	}
 
 	/* --------------------------------------------- */
 	/* Target STOP occurred                          */
 	/* --------------------------------------------- */
 	if (inst->SMBnST & BIT(NCT_SMBnST_SLVSTP)) {
-		if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
-			len = 0;
-			while (len < i2c_nct_get_dma_cnt(dev)) {
-				target_cb->write_received(data->target_cfg, data->rx_buf[len]);
-				len++;
-			}
-		}
-		if (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) {
-			target_cb->stop(data->target_cfg);
-		}
-		data->target_oper_state = I2C_NCT_OPER_STA_START;
 		/* clear STOP flag */
 		inst->SMBnST = BIT(NCT_SMBnST_SLVSTP);
+
+		if ((data->target_oper_state != I2C_NCT_OPER_STA_START) &&
+		    (data->target_oper_state != I2C_NCT_OPER_STA_IDLE) &&
+		    (target_cb != NULL) && (target_cb->stop != NULL)) {
+			target_cb->stop(target_cfg);
+		}
+		data->target_oper_state = I2C_NCT_OPER_STA_START;
+	}
+
+	/* --------------------------------------------- */
+	/* NACK occurred (last byte of a target transmit) */
+	/* --------------------------------------------- */
+	if (inst->SMBnST & BIT(NCT_SMBnST_NEGACK)) {
+		inst->SMBnST = BIT(NCT_SMBnST_NEGACK);
 	}
 
 	/* --------------------------------------------- */
 	/* Address match occurred                        */
 	/* --------------------------------------------- */
 	if (inst->SMBnST & BIT(NCT_SMBnST_NMATCH)) {
+		/* Distinguish the direction by reading XMIT bit */
 		if (inst->SMBnST & BIT(NCT_SMBnST_XMIT)) {
-			/* target received Read-Address */
-			if (data->target_oper_state != I2C_NCT_OPER_STA_START) {
-				/* target received data before */
-				len = 0;
-				while (len < i2c_nct_get_dma_cnt(dev)) {
-					target_cb->write_received(data->target_cfg, data->rx_buf[len]);
-					len++;
-				}
-			}
-
-			/* prepare tx data */
-			if (target_cb->read_requested(data->target_cfg, data->tx_buf) == 0) {
-				len = 0;
-				while (++len < sizeof(data->tx_buf)) {
-					if (target_cb->read_processed(data->target_cfg,
-							data->tx_buf + len) != 0) {
-						break;
-					}
-				}
-				data->tx_cnt = len;
+			/* target received Read-Address, send first byte now */
+			val = 0xFF;
+			if ((target_cb != NULL) && (target_cb->read_requested != NULL) &&
+			    (target_cb->read_requested(target_cfg, &val) == 0)) {
+				data->target_oper_state = I2C_NCT_OPER_STA_WRITE;
 			} else {
 				/* target has no data to send */
-				data->tx_cnt = 0;
-			}
-
-			data->target_oper_state = I2C_NCT_OPER_STA_WRITE;
-
-			if (data->tx_cnt != 0) {
-				/* Set DMA register to send data */
-				i2c_nct_start_DMA(dev, (uint32_t)data->tx_buf, data->tx_cnt);
-			} else {
+				val = 0xFF;
 				data->target_oper_state = I2C_NCT_OPER_STA_QUICK;
 			}
+			/* Clear address match bit, then feed the first byte (clears SDAST) */
+			inst->SMBnST = BIT(NCT_SMBnST_NMATCH);
+			inst->SMBnSDA = val;
 		} else {
 			/* target received Write-Address */
 			data->target_oper_state = I2C_NCT_OPER_STA_READ;
-			/* Set DMA register to get data */
-			i2c_nct_start_DMA(dev, (uint32_t)data->rx_buf, sizeof(data->rx_buf));
-			target_cb->write_requested(data->target_cfg);
+			if ((target_cb != NULL) && (target_cb->write_requested != NULL)) {
+				target_cb->write_requested(target_cfg);
+			}
+			/* Clear address match bit */
+			inst->SMBnST = BIT(NCT_SMBnST_NMATCH);
 		}
-		/* Clear address match bit & SDA pull high */
-		inst->SMBnST = BIT(NCT_SMBnST_NMATCH);
+		return;
+	}
+
+	/* --------------------------------------------- */
+	/* SDA status is set - transmit or receive       */
+	/* --------------------------------------------- */
+	if (inst->SMBnST & BIT(NCT_SMBnST_SDAST)) {
+		if (data->target_oper_state == I2C_NCT_OPER_STA_WRITE) {
+			/* Controller ACKed the previous byte, provide the next one */
+			val = 0xFF;
+			if ((target_cb != NULL) && (target_cb->read_processed != NULL) &&
+			    (target_cb->read_processed(target_cfg, &val) != 0)) {
+				/* No more data from upper layer */
+				val = 0xFF;
+				data->target_oper_state = I2C_NCT_OPER_STA_QUICK;
+			}
+			inst->SMBnSDA = val;
+		} else if (data->target_oper_state == I2C_NCT_OPER_STA_QUICK) {
+			/* Upper layer has no data, keep releasing the bus */
+			inst->SMBnSDA = 0xFF;
+		} else if (data->target_oper_state == I2C_NCT_OPER_STA_READ) {
+			/* One byte received from controller */
+			val = inst->SMBnSDA;
+			if ((target_cb != NULL) && (target_cb->write_received != NULL)) {
+				target_cb->write_received(target_cfg, val);
+			}
+		} else {
+			LOG_ERR("target: unexpected SDAST in state %d",
+				data->target_oper_state);
+		}
 	}
 }
 
